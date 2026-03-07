@@ -16,7 +16,7 @@ pub mod websdr;
 pub use device::{Device, DeviceInfo};
 pub use error::{Error, Result};
 pub use tuner::{Tuner, FilterRange};
-pub use stream::{SampleStream, F32Stream};
+pub use stream::{SampleStream, F32Stream, PooledVec};
 pub use server::SharingServer;
 pub use rtl_tcp::TcpServer;
 pub use demod::DEFAULT_SAMPLE_RATE;

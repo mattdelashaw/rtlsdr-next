@@ -108,28 +108,22 @@ impl Decimator {
         Self::new(factor, cutoff, num_taps)
     }
 
-    /// Process a block of samples.
+    /// Process a block of samples into a provided destination buffer.
     ///
-    /// Input and output are interleaved I/Q f32 pairs as produced by the
-    /// `Converter`.  Decimation is applied to the complex magnitude, i.e.
-    /// both I and Q channels are decimated together maintaining their
-    /// pairing.
-    ///
-    /// For non-I/Q (real) sample streams, the same function works — just
-    /// pass a plain real sample slice.
-    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+    /// This avoids re-allocating a new Vec for every block.
+    pub fn process_into(&mut self, input: &[f32], output: &mut Vec<f32>) {
+        // Clear destination but keep capacity
+        output.clear();
+
         // Build the extended buffer: history || input
         let taps_len = self.taps.len();
         let overlap  = taps_len - 1;
 
+        // Note: Using a pre-allocated extended buffer would be even faster, 
+        // but for now let's focus on the output allocation.
         let mut extended = Vec::with_capacity(overlap + input.len());
         extended.extend_from_slice(&self.history);
         extended.extend_from_slice(input);
-
-        // Output capacity: ceil((input.len() - phase) / factor)
-        let output_len = (input.len().saturating_sub(self.phase) + self.factor - 1)
-            / self.factor;
-        let mut output = Vec::with_capacity(output_len);
 
         // Run FIR + decimate
         #[cfg(target_arch = "aarch64")]
@@ -141,13 +135,13 @@ impl Decimator {
                         &self.taps,
                         self.factor,
                         &mut self.phase,
-                        &mut output,
+                        output,
                     );
                 }
                 // Update history
                 let new_history_start = extended.len() - overlap;
                 self.history.copy_from_slice(&extended[new_history_start..]);
-                return output;
+                return;
             }
         }
 
@@ -156,13 +150,20 @@ impl Decimator {
             &self.taps,
             self.factor,
             &mut self.phase,
-            &mut output,
+            output,
         );
 
         // Update history for next block
         let new_history_start = extended.len() - overlap;
         self.history.copy_from_slice(&extended[new_history_start..]);
+    }
 
+    /// Process a block of samples and return a new Vec.
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        let output_len = (input.len().saturating_sub(self.phase) + self.factor - 1)
+            / self.factor;
+        let mut output = Vec::with_capacity(output_len);
+        self.process_into(input, &mut output);
         output
     }
 
