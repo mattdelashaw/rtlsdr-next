@@ -207,6 +207,28 @@ pub mod i2c {
 }
 
 // ============================================================
+// Tuner Identification (for probing)
+// ============================================================
+
+pub mod tuner_ids {
+    pub const R82XX_I2C_ADDR: u8 = 0x34;
+    pub const R82XX_CHECK_REG: u8 = 0x00;
+    pub const R82XX_CHECK_VAL: u8 = 0x69;
+
+    pub const E4000_I2C_ADDR: u8 = 0xc8;
+    pub const E4000_CHECK_REG: u8 = 0x02;
+    pub const E4000_CHECK_VAL: u8 = 0x40;
+
+    pub const FC0012_I2C_ADDR: u8 = 0xc6;
+    pub const FC0012_CHECK_REG: u8 = 0x00;
+    pub const FC0012_CHECK_VAL: u8 = 0xa1;
+
+    pub const FC0013_I2C_ADDR: u8 = 0xc6;
+    pub const FC0013_CHECK_REG: u8 = 0x00;
+    pub const FC0013_CHECK_VAL: u8 = 0xa3;
+}
+
+// ============================================================
 // R828D tuner I2C address and shadow register layout
 // ============================================================
 

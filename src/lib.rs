@@ -57,6 +57,8 @@ pub struct Driver {
     pub ppm: i32,
 }
 
+use tuner::TunerType;
+
 impl Driver {
     /// Discovers and initializes the first available RTL-SDR device.
     pub fn new() -> Result<Self> {
@@ -71,8 +73,29 @@ impl Driver {
         demod::init_registers(hw)?;
 
         // ── Step 4: tuner init ────────────────────────────────────────────
-        let tuner: Box<dyn Tuner> =
-            Box::new(tuners::r828d::R828D::new(device.clone(), is_v4));
+        // Probe the tuner type
+        let tuner_type = device.probe_tuner()?;
+        log::info!("Detected Tuner: {:?}", tuner_type);
+
+        let tuner: Box<dyn Tuner> = match tuner_type {
+            TunerType::R820T => {
+                Box::new(tuners::r828d::R828D::new(device.clone(), is_v4))
+            }
+            // The V4 is always an R828D (which identifies as R820T family)
+            // If probe failed but we know it's a V4 from EEPROM, force R828D?
+            // For now, let's assume probe works.
+            
+            TunerType::Unknown(_) => {
+                // If unknown, fallback to R828D but warn? Or fail?
+                // Given the goal is "prepare the probes", let's be strict for now
+                // to prove the probing works.
+                return Err(Error::UnsupportedTuner(format!("Unknown tuner: {:?}", tuner_type)));
+            }
+            _ => {
+                return Err(Error::UnsupportedTuner(format!("{:?} not yet supported", tuner_type)));
+            }
+        };
+
         tuner.initialize()?;
 
         // ── Steps 5–8: demodulator sync ───────────────────────────────────

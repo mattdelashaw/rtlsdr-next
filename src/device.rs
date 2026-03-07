@@ -188,7 +188,62 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
 // Device register / I2C / bulk methods
 // ============================================================
 
+use crate::registers::{self, tuner_ids};
+use crate::tuner::TunerType;
+
+// ... (existing imports)
+
 impl<T: UsbContext> Device<T> {
+    /// Probe the I2C bus to identify the connected tuner.
+    pub fn probe_tuner(&self) -> Result<TunerType> {
+        // Enable I2C repeater
+        self.write_reg(
+            registers::Block::Demod as u16, 
+            registers::demod::P0_IIC_REPEAT, 
+            0x08 // bit 3 = 1
+        )?;
+
+        let mut found = TunerType::Unknown(0);
+
+        // 1. Check for R820T / R828D (most common)
+        if let Ok(data) = self.i2c_read(tuner_ids::R82XX_I2C_ADDR, tuner_ids::R82XX_CHECK_REG, 1) {
+            if !data.is_empty() && data[0] == tuner_ids::R82XX_CHECK_VAL {
+                found = TunerType::R820T;
+            }
+        }
+
+        // 2. Check for E4000 (if not found yet)
+        if let TunerType::Unknown(_) = found {
+             if let Ok(data) = self.i2c_read(tuner_ids::E4000_I2C_ADDR, tuner_ids::E4000_CHECK_REG, 1) {
+                if !data.is_empty() && data[0] == tuner_ids::E4000_CHECK_VAL {
+                    found = TunerType::E4000;
+                }
+            }
+        }
+
+        // 3. Check for FC0012 (if not found yet)
+        if let TunerType::Unknown(_) = found {
+            if let Ok(data) = self.i2c_read(tuner_ids::FC0012_I2C_ADDR, tuner_ids::FC0012_CHECK_REG, 1) {
+                if !data.is_empty() {
+                    if data[0] == tuner_ids::FC0012_CHECK_VAL {
+                        found = TunerType::FC0012;
+                    } else if data[0] == tuner_ids::FC0013_CHECK_VAL {
+                        found = TunerType::FC0013;
+                    }
+                }
+            }
+        }
+
+        // Disable I2C repeater
+        self.write_reg(
+            registers::Block::Demod as u16, 
+            registers::demod::P0_IIC_REPEAT, 
+            0x00
+        )?;
+
+        Ok(found)
+    }
+
     pub fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> Result<usize> {
         Ok(self.handle.read_bulk(endpoint, buf, timeout)?)
     }

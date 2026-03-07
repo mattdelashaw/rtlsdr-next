@@ -1,5 +1,14 @@
 use crate::error::Result;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TunerType {
+    R820T, // Covers R820T2 and R828D (functionally similar for detection)
+    E4000,
+    FC0012,
+    FC0013,
+    Unknown(u8),
+}
+
 pub struct FilterRange {
     pub start_hz: u64,
     pub end_hz: u64,

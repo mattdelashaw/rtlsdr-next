@@ -27,7 +27,7 @@
 use crate::device::HardwareInterface;
 use crate::error::Result;
 use crate::registers::{self, Block, demod, sys, usb};
-use log::{info, debug};
+use log::{debug};
 
 // ── Default sample rate ──────────────────────────────────────────────────────
 

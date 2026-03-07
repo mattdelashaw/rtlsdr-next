@@ -3,7 +3,7 @@ use crate::tuner::{Tuner, FilterRange};
 use crate::error::{Error, Result};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use log::{info, warn, debug};
+use log::{warn, debug};
 
 // ============================================================
 // Constants
