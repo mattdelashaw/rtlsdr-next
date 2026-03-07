@@ -22,7 +22,26 @@ Benchmarked on an ARM64 host (Pi 5 equivalent):
 *   **Efficiency:** CPU usage is effectively negligible for standard 2.4 MSPS radio streams.
 
 ## 🏗 Quick Start
-... (keep existing code) ...
+
+```rust
+use rtlsdr_next::Driver;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // 1. Open device
+    let mut driver = Driver::new()?;
+    driver.set_frequency(100_000_000)?; // 100 MHz
+    
+    // 2. Get a decimated F32 stream (2.048 MSPS -> 256 kSPS)
+    let mut stream = driver.stream_f32(8);
+
+    // 3. Process samples
+    while let Some(res) = stream.next().await {
+        let iq_samples = res?; // Propagates hardware errors like disconnects
+        // Process interleaved [I, Q, I, Q...] f32 samples
+    }
+    Ok(())
+}
 
 ## 📊 Benchmarking
 
@@ -32,7 +51,11 @@ cargo bench --bench dsp_bench
 ```
 
 ## 🛠 Running the Example
-... (keep existing commands) ...
+
+Once your hardware is plugged in, try the included monitor example:
+```bash
+RUST_LOG=info cargo run --example monitor
+```
 
 ## 🗺 Roadmap - Phase Shifting
 
