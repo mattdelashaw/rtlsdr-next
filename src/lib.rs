@@ -16,7 +16,7 @@ pub mod websdr;
 pub use device::{Device, DeviceInfo};
 pub use error::{Error, Result};
 pub use tuner::{Tuner, FilterRange};
-pub use stream::{SampleStream, F32Stream, PooledVec};
+pub use stream::{SampleStream, F32Stream, PooledBuffer};
 pub use server::SharingServer;
 pub use rtl_tcp::TcpServer;
 pub use demod::DEFAULT_SAMPLE_RATE;
@@ -156,12 +156,12 @@ impl Driver {
     }
 
     /// Create a new asynchronous sample stream.
-    pub fn stream(&self) -> SampleStream {
+    pub fn stream(&self) -> SampleStream<rusb::Context> {
         SampleStream::new(self.device.clone())
     }
 
     /// Create a high-level DSP stream that produces decimated F32 samples.
-    pub fn stream_f32(&self, factor: usize) -> F32Stream {
+    pub fn stream_f32(&self, factor: usize) -> F32Stream<rusb::Context> {
         F32Stream::new(self.stream(), factor)
     }
 

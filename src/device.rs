@@ -81,6 +81,9 @@ pub struct Device<T: UsbContext> {
     pub info: DeviceInfo,
 }
 
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+
 // ============================================================
 // DMA / Heap transport buffer
 // ============================================================
@@ -91,14 +94,17 @@ pub enum BufferType {
 }
 
 /// USB transfer buffer — DMA-pinned on Pi 5 / Linux RP1, heap elsewhere.
-pub struct TransportBuffer<'a, T: UsbContext> {
-    device: &'a Device<T>,
+///
+/// This buffer owns a reference to the Device to ensure the device handle
+/// remains valid as long as the DMA buffer exists (needed for free).
+pub struct TransportBuffer<T: UsbContext> {
+    device: Arc<Device<T>>,
     inner:  BufferType,
     len:    usize,
 }
 
-impl<'a, T: UsbContext> TransportBuffer<'a, T> {
-    pub fn new(device: &'a Device<T>, len: usize) -> Self {
+impl<T: UsbContext> TransportBuffer<T> {
+    pub fn new(device: Arc<Device<T>>, len: usize) -> Self {
         let raw_handle = device.handle.as_raw();
         let ptr = unsafe { libusb_dev_mem_alloc(raw_handle, len as libc::size_t) };
 
@@ -124,7 +130,20 @@ impl<'a, T: UsbContext> TransportBuffer<'a, T> {
     }
 }
 
-impl<'a, T: UsbContext> Drop for TransportBuffer<'a, T> {
+impl<T: UsbContext> Deref for TransportBuffer<T> {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<T: UsbContext> DerefMut for TransportBuffer<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
+
+impl<T: UsbContext> Drop for TransportBuffer<T> {
     fn drop(&mut self) {
         if let BufferType::Dma(ptr) = self.inner {
             let raw_handle = self.device.handle.as_raw();
@@ -133,7 +152,8 @@ impl<'a, T: UsbContext> Drop for TransportBuffer<'a, T> {
     }
 }
 
-unsafe impl<'a, T: UsbContext> Send for TransportBuffer<'a, T> {}
+unsafe impl<T: UsbContext> Send for TransportBuffer<T> {}
+unsafe impl<T: UsbContext> Sync for TransportBuffer<T> {}
 
 // ============================================================
 // HardwareInterface trait

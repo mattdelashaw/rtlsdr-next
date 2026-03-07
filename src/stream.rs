@@ -1,4 +1,4 @@
-use crate::device::Device;
+use crate::device::{Device, TransportBuffer};
 use rusb::UsbContext;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -14,48 +14,51 @@ const BULK_ENDPOINT: u8 = 0x81;
 const BUFFER_SIZE: usize = 256 * 1024; // 256KB buffers
 const NUM_BUFFERS: usize = 16;
 
-/// A buffer that automatically returns itself to a pool when dropped.
-pub struct PooledVec<T> {
-    inner: Option<Vec<T>>,
-    pool_tx: Option<mpsc::Sender<Vec<T>>>,
+/// A generic buffer that automatically returns itself to a pool when dropped.
+pub struct PooledBuffer<B> {
+    inner: Option<B>,
+    pool_tx: Option<mpsc::Sender<B>>,
 }
 
-impl<T> PooledVec<T> {
-    pub fn new(vec: Vec<T>, pool_tx: Option<mpsc::Sender<Vec<T>>>) -> Self {
-        Self { inner: Some(vec), pool_tx }
+impl<B> PooledBuffer<B> {
+    pub fn new(buffer: B, pool_tx: Option<mpsc::Sender<B>>) -> Self {
+        Self { inner: Some(buffer), pool_tx }
     }
 }
 
-impl<T> Deref for PooledVec<T> {
-    type Target = Vec<T>;
+impl<B> Deref for PooledBuffer<B> {
+    type Target = B;
     fn deref(&self) -> &Self::Target { self.inner.as_ref().unwrap() }
 }
 
-impl<T> DerefMut for PooledVec<T> {
+impl<B> DerefMut for PooledBuffer<B> {
     fn deref_mut(&mut self) -> &mut Self::Target { self.inner.as_mut().unwrap() }
 }
 
-impl<T> Drop for PooledVec<T> {
+impl<B> Drop for PooledBuffer<B> {
     fn drop(&mut self) {
-        if let (Some(vec), Some(tx)) = (self.inner.take(), &self.pool_tx) {
-            let _ = tx.try_send(vec);
+        if let (Some(buffer), Some(tx)) = (self.inner.take(), &self.pool_tx) {
+            let _ = tx.try_send(buffer);
         }
     }
 }
 
 /// A stream of raw interleaved U8 samples (I, Q, I, Q...).
-pub struct SampleStream {
-    receiver: mpsc::Receiver<Result<PooledVec<u8>, crate::Error>>,
+pub struct SampleStream<T: UsbContext + 'static> {
+    receiver: mpsc::Receiver<Result<PooledBuffer<TransportBuffer<T>>, crate::Error>>,
     cancel_token: CancellationToken,
 }
 
-impl SampleStream {
-    pub fn new<T: UsbContext + 'static>(device: Arc<Device<T>>) -> Self {
+impl<T: UsbContext + 'static> SampleStream<T> {
+    pub fn new(device: Arc<Device<T>>) -> Self {
         let (tx, rx) = mpsc::channel(NUM_BUFFERS);
-        let (pool_tx, mut pool_rx) = mpsc::channel::<Vec<u8>>(NUM_BUFFERS);
+        let (pool_tx, mut pool_rx) = mpsc::channel::<TransportBuffer<T>>(NUM_BUFFERS);
         
+        // Pre-fill the pool with DMA-capable TransportBuffers
         for _ in 0..NUM_BUFFERS {
-            let _ = pool_tx.try_send(vec![0u8; BUFFER_SIZE]);
+            // Each buffer holds an Arc to the device
+            let buf = TransportBuffer::new(device.clone(), BUFFER_SIZE);
+            let _ = pool_tx.try_send(buf);
         }
 
         let cancel_token = CancellationToken::new();
@@ -64,15 +67,18 @@ impl SampleStream {
         std::thread::spawn(move || {
             loop {
                 if cancel_clone.is_cancelled() { break; }
+                
+                // Get a TransportBuffer from the pool
                 let mut buf = match pool_rx.blocking_recv() {
                     Some(b) => b,
                     None => break,
                 };
 
+                // Read into the buffer (buf derefs to &mut [u8])
                 match device.read_bulk(BULK_ENDPOINT, &mut buf, Duration::from_millis(100)) {
                     Ok(n) => {
                         if n > 0 {
-                            let pooled = PooledVec::new(buf, Some(pool_tx.clone()));
+                            let pooled = PooledBuffer::new(buf, Some(pool_tx.clone()));
                             if tx.blocking_send(Ok(pooled)).is_err() { break; }
                         } else {
                             let _ = pool_tx.try_send(buf);
@@ -94,25 +100,25 @@ impl SampleStream {
         Self { receiver: rx, cancel_token }
     }
 
-    pub async fn next(&mut self) -> Option<Result<PooledVec<u8>, crate::Error>> {
+    pub async fn next(&mut self) -> Option<Result<PooledBuffer<TransportBuffer<T>>, crate::Error>> {
         self.receiver.recv().await
     }
 
     pub fn close(&self) { self.cancel_token.cancel(); }
 }
 
-impl Drop for SampleStream {
+impl<T: UsbContext> Drop for SampleStream<T> {
     fn drop(&mut self) { self.close(); }
 }
 
 /// A high-level DSP stream that produces interleaved F32 samples.
-pub struct F32Stream {
-    raw_stream: SampleStream,
+pub struct F32Stream<T: UsbContext + 'static> {
+    raw_stream: SampleStream<T>,
     decimator:  Option<Decimator>,
     dc_remover: Option<crate::dsp::DcRemover>,
     agc:        Option<crate::dsp::Agc>,
     
-    // Output Pools
+    // Output Pools (Vec<f32> is sufficient here, no DMA needed for DSP output)
     pool_f32_tx:    mpsc::Sender<Vec<f32>>,
     pool_f32_rx:    mpsc::Receiver<Vec<f32>>,
     
@@ -120,8 +126,8 @@ pub struct F32Stream {
     pool_dec_rx:    mpsc::Receiver<Vec<f32>>,
 }
 
-impl F32Stream {
-    pub fn new(raw_stream: SampleStream, decimation_factor: usize) -> Self {
+impl<T: UsbContext + 'static> F32Stream<T> {
+    pub fn new(raw_stream: SampleStream<T>, decimation_factor: usize) -> Self {
         let decimator = if decimation_factor > 1 {
             Some(Decimator::with_factor(decimation_factor))
         } else {
@@ -159,17 +165,21 @@ impl F32Stream {
         self
     }
 
-    pub async fn next(&mut self) -> Option<Result<PooledVec<f32>, crate::Error>> {
+    pub async fn next(&mut self) -> Option<Result<PooledBuffer<Vec<f32>>, crate::Error>> {
+        // raw_res is PooledBuffer<TransportBuffer<T>>
         let raw_res = self.raw_stream.next().await?;
-        let u8_data = match raw_res {
+        let u8_data_buffer = match raw_res {
             Ok(data) => data,
             Err(e) => return Some(Err(e)),
         };
+        
+        // Deref the PooledBuffer to get TransportBuffer, then deref that to get &[u8]
+        let u8_data = &*u8_data_buffer;
 
         let mut f32_buf = self.pool_f32_rx.recv().await.unwrap();
         if f32_buf.len() != u8_data.len() { f32_buf.resize(u8_data.len(), 0.0); }
 
-        converter::convert(&u8_data, &mut f32_buf);
+        converter::convert(u8_data, &mut f32_buf);
 
         if let Some(dc) = &mut self.dc_remover { dc.process(&mut f32_buf); }
         if let Some(agc) = &mut self.agc { agc.process(&mut f32_buf); }
@@ -181,9 +191,9 @@ impl F32Stream {
             // Return intermediate buffer to pool
             let _ = self.pool_f32_tx.try_send(f32_buf);
             
-            Some(Ok(PooledVec::new(dec_buf, Some(self.pool_dec_tx.clone()))))
+            Some(Ok(PooledBuffer::new(dec_buf, Some(self.pool_dec_tx.clone()))))
         } else {
-            Some(Ok(PooledVec::new(f32_buf, Some(self.pool_f32_tx.clone()))))
+            Some(Ok(PooledBuffer::new(f32_buf, Some(self.pool_f32_tx.clone()))))
         }
     }
 
