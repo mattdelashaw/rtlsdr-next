@@ -81,10 +81,16 @@ impl<T: UsbContext + 'static> SampleStream<T> {
                             let pooled = PooledBuffer::new(buf, Some(pool_tx.clone()));
                             if tx.blocking_send(Ok(pooled)).is_err() { break; }
                         } else {
+                            // Zero-byte read: the DMA buffer may have been partially
+                            // written by the host controller. We recycle it anyway —
+                            // n == 0 means no useful data was committed, so the stale
+                            // bytes will be overwritten on the next successful read.
                             let _ = pool_tx.try_send(buf);
                         }
                     }
                     Err(crate::Error::Usb(rusb::Error::Timeout)) => {
+                        // Timeout: same situation — buffer is dirty but will be
+                        // overwritten before any caller sees it.
                         let _ = pool_tx.try_send(buf);
                         continue;
                     }
@@ -198,4 +204,14 @@ impl<T: UsbContext + 'static> F32Stream<T> {
     }
 
     pub fn close(&self) { self.raw_stream.close(); }
+}
+
+impl<T: UsbContext + 'static> Drop for F32Stream<T> {
+    fn drop(&mut self) {
+        // Explicitly cancel the underlying SampleStream rather than relying
+        // on field drop order. This makes shutdown intent unambiguous and
+        // ensures the USB thread sees the cancellation signal immediately,
+        // before any pool channels are dropped.
+        self.close();
+    }
 }
