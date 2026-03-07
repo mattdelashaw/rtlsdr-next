@@ -271,7 +271,7 @@ impl R828D {
         self.device.i2c_write_tuner(I2C_ADDR, 0x16, &[(sdm >> 8) as u8])?;
         self.device.i2c_write_tuner(I2C_ADDR, 0x15, &[(sdm & 0xff) as u8])?;
 
-        info!(
+        debug!(
             "LO: {} kHz | MixDiv: {} | nint: {} | SDM: {} | VCO: {} kHz",
             lo_freq_hz / 1000, mix_div, nint, sdm, vco_freq / 1000
         );
@@ -409,7 +409,7 @@ impl Tuner for R828D {
         // VGA gain: reg 0x0a bits [3:0]
         self.write_reg_mask(0x0a, cfg.vga, 0x0f)?;
 
-        info!(
+        debug!(
             "Gain set to {:.1} dB (Idx: {}, LNA: {}, Mix: {}, VGA: {})",
             GAIN_STEPS[idx] as f32 / 10.0, idx, cfg.lna, cfg.mix, cfg.vga
         );
@@ -446,7 +446,7 @@ impl Tuner for R828D {
         let offset = (nominal as i64 * ppm as i64) / 1_000_000;
         let actual = (nominal as i64 + offset) as u64;
         *self.xtal_freq.lock().unwrap() = actual;
-        info!("Tuner crystal frequency updated: {} Hz ({} PPM)", actual, ppm);
+        debug!("Tuner crystal frequency updated: {} Hz ({} PPM)", actual, ppm);
         Ok(())
     }
 }

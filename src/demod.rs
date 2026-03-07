@@ -104,7 +104,7 @@ pub fn power_on(hw: &dyn HardwareInterface) -> Result<()> {
     let ctl1 = hw.read_reg(Block::Sys as u16, sys::DEMOD_CTL1)?;
     hw.write_reg(Block::Sys as u16, sys::DEMOD_CTL1, ctl1 & !0x20)?;
 
-    info!("ADCs and PLL powered on (DEMOD_CTL=0x{:02x})", ctl);
+    debug!("ADCs and PLL powered on (DEMOD_CTL=0x{:02x})", ctl);
     Ok(())
 }
 
@@ -116,7 +116,7 @@ pub fn init_registers(hw: &dyn HardwareInterface) -> Result<()> {
         let block = Block::demod(entry.page);
         hw.write_reg(block, entry.reg, entry.val)?;
     }
-    info!("Static init table written ({} entries)", INIT_TABLE.len());
+    debug!("Static init table written ({} entries)", INIT_TABLE.len());
     Ok(())
 }
 
@@ -146,7 +146,7 @@ pub fn set_if_freq(hw: &dyn HardwareInterface, if_hz: u32, xtal_hz: u32) -> Resu
     hw.write_reg(Block::demod(1), demod::P1_IF_FREQ_M, m)?;
     hw.write_reg(Block::demod(1), demod::P1_IF_FREQ_L, l)?;
 
-    info!(
+    debug!(
         "IF freq {} Hz (xtal {} Hz) → ratio=0x{:06x} regs=[0x{:02x}, 0x{:02x}, 0x{:02x}]",
         if_hz, xtal_hz, ratio, h, m, l
     );
@@ -174,7 +174,7 @@ pub fn set_sample_rate(hw: &dyn HardwareInterface, rate_hz: u32, xtal_hz: u32) -
     hw.write_reg(Block::demod(2), demod::P2_RESAMPLE_LSB, regs[3])?;
 
     let effective = registers::effective_sample_rate(regs, xtal_hz);
-    info!(
+    debug!(
         "Sample rate {} Hz (xtal {} Hz) → effective {} Hz (regs={:02x?})",
         rate_hz, xtal_hz, effective, regs
     );
@@ -195,7 +195,7 @@ pub fn reset_demod(hw: &dyn HardwareInterface) -> Result<()> {
     )?;
     // Clear soft reset
     hw.write_reg(Block::demod(1), demod::P1_SOFT_RESET, 0x00)?;
-    info!("Soft reset complete");
+    debug!("Soft reset complete");
     Ok(())
 }
 
@@ -217,7 +217,7 @@ pub fn start_streaming(hw: &dyn HardwareInterface) -> Result<()> {
     // Unstall — clear bit 1, keep bit 0 set
     hw.write_reg(Block::Usb as u16, usb::EPA_CTL, 0x00)?;
 
-    info!("EPA FIFO flushed, bulk IN ready");
+    debug!("EPA FIFO flushed, bulk IN ready");
     Ok(())
 }
 
@@ -227,7 +227,7 @@ pub fn stop_streaming(hw: &dyn HardwareInterface) -> Result<()> {
     hw.write_reg(Block::Usb as u16, usb::EPA_CTL, 0x02)?;
     // Power down ADCs and demod PLL (leave DAGC off too)
     hw.write_reg(Block::Sys as u16, sys::DEMOD_CTL, 0x20)?;
-    info!("Streaming stopped, ADCs powered down");
+    debug!("Streaming stopped, ADCs powered down");
     Ok(())
 }
 
