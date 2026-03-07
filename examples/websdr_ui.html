@@ -33,6 +33,7 @@
 
     <script>
         const ws = new WebSocket(`ws://${location.hostname || 'localhost'}:8080/ws`);
+        ws.binaryType = 'arraybuffer';
         const canvas = document.getElementById('waterfall');
         const ctx = canvas.getContext('2d');
         const status = document.getElementById('status');
@@ -44,8 +45,6 @@
         let audioCtx = null;
         const SAMPLE_RATE = 51200; // Match backend decimation
         
-        ws.binaryType = 'arraybuffer';
-
         ws.onopen = () => { status.innerText = 'Connected to WebSDR Backend'; };
         ws.onerror = () => { status.innerText = 'Error connecting to backend'; };
 
