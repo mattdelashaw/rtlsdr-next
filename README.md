@@ -1,6 +1,5 @@
 # rtlsdr-next 📡
-[!WARNING]
-*Not integration tested*
+❗*Not hardware tested*❗
 
 A high-performance, asynchronous, and safety-first Rust driver for RTL2832U-based Software Defined Radios (SDR). 
 
@@ -46,13 +45,19 @@ Once your hardware is plugged in, try the included monitor example:
 RUST_LOG=info cargo run --example monitor
 ```
 
-## 🗺 Roadmap (Completed)
+## 🗺 Roadmap
 
 - [x] **Phase 1: Hardware Bridge** (USB Vendor Requests, I2C Bridge)
 - [x] **Phase 2: Modular Tuner Support** (R828D / V4 Triplexer and Interleaved Gain)
 - [x] **Phase 3: Async Pipe** (Tokio Stream with error propagation and shutdown)
 - [x] **Phase 4: DSP Integrated Decimation** (NEON SIMD Low-Pass Filters)
 - [x] **Phase 5: Soft Device Sharing** (Unix Domain Socket Server with CancellationToken)
+- [ ] **Phase 6: Legacy Hardware** (Support for older hardware)
+- [ ] **Phase 7: Cross Platform** (More focus on other environments)
+
+## 📝 Notes
+
 
 ## 📜 License
+
 Licensed under the Apache License, Version 2.0 (the "License").
