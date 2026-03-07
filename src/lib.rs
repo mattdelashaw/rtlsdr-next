@@ -11,6 +11,7 @@ pub mod converter;
 pub mod dsp;
 pub mod server;
 pub mod rtl_tcp;
+pub mod websdr;
 
 pub use device::{Device, DeviceInfo};
 pub use error::{Error, Result};
