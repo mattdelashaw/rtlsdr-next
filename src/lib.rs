@@ -159,7 +159,9 @@ impl Driver {
             while let Some(res) = stream.next().await {
                 match res {
                     Ok(samples) => {
-                        let _ = tx.send(Arc::new(samples));
+                        // For broadcasting, we currently clone once per block into an Arc.
+                        // This allows multiple clients to share the same Arc without further clones.
+                        let _ = tx.send(Arc::new(samples.to_vec()));
                     }
                     Err(e) => {
                         log::error!("Hardware stream error during sharing: {:?}", e);

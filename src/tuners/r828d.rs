@@ -3,7 +3,7 @@ use crate::tuner::{Tuner, FilterRange};
 use crate::error::{Error, Result};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use log::{info, warn};
+use log::{info, warn, debug};
 
 // ============================================================
 // Constants
@@ -123,6 +123,7 @@ pub struct R828D {
     xtal_freq:  Mutex<u64>,
     is_v4:      bool,
     has_lock:   Mutex<bool>,
+    current_gain: Mutex<f32>,
 }
 
 // ============================================================
@@ -137,6 +138,7 @@ impl R828D {
             xtal_freq: Mutex::new(28_800_000), // Default
             is_v4,
             has_lock:  Mutex::new(false),
+            current_gain: Mutex::new(0.0),
         }
     }
 
@@ -409,12 +411,19 @@ impl Tuner for R828D {
         // VGA gain: reg 0x0a bits [3:0]
         self.write_reg_mask(0x0a, cfg.vga, 0x0f)?;
 
+        let actual = GAIN_STEPS[idx] as f32 / 10.0;
+        *self.current_gain.lock().unwrap() = actual;
+
         debug!(
             "Gain set to {:.1} dB (Idx: {}, LNA: {}, Mix: {}, VGA: {})",
-            GAIN_STEPS[idx] as f32 / 10.0, idx, cfg.lna, cfg.mix, cfg.vga
+            actual, idx, cfg.lna, cfg.mix, cfg.vga
         );
 
-        Ok(GAIN_STEPS[idx] as f32 / 10.0)
+        Ok(actual)
+    }
+
+    fn get_gain(&self) -> Result<f32> {
+        Ok(*self.current_gain.lock().unwrap())
     }
 
     /// Return the three triplexer filter ranges for the V4.

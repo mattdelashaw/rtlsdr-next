@@ -14,6 +14,9 @@ pub trait Tuner: Send + Sync {
     
     /// Set the gain in dB. Returns the actual gain set.
     fn set_gain(&self, db: f32) -> Result<f32>;
+
+    /// Get the current gain in dB.
+    fn get_gain(&self) -> Result<f32>;
     
     /// Get the supported filter ranges (useful for V4 Triplexer).
     fn get_filters(&self) -> Vec<FilterRange>;

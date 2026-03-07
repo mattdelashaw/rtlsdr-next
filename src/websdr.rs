@@ -11,6 +11,7 @@ use crate::Driver;
 use crate::dsp::{FmDemodulator, Decimator};
 use rustfft::{FftPlanner, num_complex::Complex};
 use log::{info, error};
+use futures_util::{StreamExt, SinkExt};
 
 // ── WebSocket Protocol ──────────────────────────────────────────────────────
 
@@ -101,16 +102,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
     let (mut sender, mut receiver) = socket.split();
 
     // Task: Push waterfall (binary)
-    let mut waterfall_rx_task = waterfall_rx;
-    let mut sender_wf = sender;
-    let (tx_wf, mut rx_wf) = tokio::sync::mpsc::channel(16);
-    
-    // We need to split the sender or use a wrapper because we have two sources
-    let sender_shared = Arc::new(Mutex::new(sender_wf));
+    let sender_shared = Arc::new(Mutex::new(sender));
 
     let s1 = sender_shared.clone();
     let mut waterfall_task = tokio::spawn(async move {
-        while let Ok(data) = waterfall_rx_task.recv().await {
+        while let Ok(data) = waterfall_rx.recv().await {
             let mut msg = vec![b'W'];
             msg.extend_from_slice(&data);
             if s1.lock().await.send(Message::Binary(msg.into())).await.is_err() { break; }
@@ -176,7 +172,8 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut audio_decimator = Decimator::new(5, 0.1, 31); // 256k -> 51k (audio-ish)
 
     while let Some(res) = stream.next().await {
-        let iq = res?;
+        let iq_pooled = res?;
+        let iq = &*iq_pooled;
         
         // 1. FFT for Waterfall
         if iq.len() >= fft_size * 2 {
@@ -197,7 +194,7 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
         }
 
         // 2. FM Demodulation
-        let audio_raw = fm.process(&iq);
+        let audio_raw = fm.process(iq);
         let audio_final = audio_decimator.process(&audio_raw);
         let _ = state.audio_tx.send(audio_final);
     }

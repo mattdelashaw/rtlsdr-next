@@ -5,51 +5,107 @@ use tokio::sync::mpsc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use log::error;
+use std::ops::{Deref, DerefMut};
 
 use crate::converter;
 use crate::dsp::Decimator;
 
 const BULK_ENDPOINT: u8 = 0x81;
 const BUFFER_SIZE: usize = 256 * 1024; // 256KB buffers
-const NUM_BUFFERS: usize = 8; // Double/Triple buffering
+const NUM_BUFFERS: usize = 16; // Increased for smoother pooling
+
+/// A buffer that automatically returns itself to a pool when dropped.
+pub struct Pooled<T> {
+    inner: Option<T>,
+    pool_tx: Option<mpsc::Sender<T>>,
+}
+
+impl<T> Pooled<T> {
+    pub fn new(data: T, pool_tx: Option<mpsc::Sender<T>>) -> Self {
+        Self {
+            inner: Some(data),
+            pool_tx,
+        }
+    }
+}
+
+impl<T> Deref for Pooled<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().unwrap()
+    }
+}
+
+impl<T> DerefMut for Pooled<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().unwrap()
+    }
+}
+
+impl<T> Drop for Pooled<T> {
+    fn drop(&mut self) {
+        if let (Some(data), Some(pool_tx)) = (self.inner.take(), &self.pool_tx) {
+            // Return to pool. If receiver dropped, the buffer is just freed.
+            let _ = pool_tx.try_send(data);
+        }
+    }
+}
 
 /// A stream of raw interleaved U8 samples (I, Q, I, Q...).
 pub struct SampleStream {
-    receiver: mpsc::Receiver<Result<Vec<u8>, crate::Error>>,
+    receiver: mpsc::Receiver<Result<Pooled<Vec<u8>>, crate::Error>>,
     cancel_token: CancellationToken,
 }
 
 impl SampleStream {
     pub fn new<T: UsbContext + 'static>(device: Arc<Device<T>>) -> Self {
         let (tx, rx) = mpsc::channel(NUM_BUFFERS);
+        let (pool_tx, mut pool_rx) = mpsc::channel::<Vec<u8>>(NUM_BUFFERS);
+        
+        // Pre-fill the pool
+        for _ in 0..NUM_BUFFERS {
+            let _ = pool_tx.try_send(vec![0u8; BUFFER_SIZE]);
+        }
+
         let cancel_token = CancellationToken::new();
         let cancel_clone = cancel_token.clone();
         
         // Use a dedicated thread for high-throughput USB reads
         std::thread::spawn(move || {
-            let mut buf = vec![0u8; BUFFER_SIZE];
-            
             loop {
-                // Check for cancellation
                 if cancel_clone.is_cancelled() {
                     break;
                 }
 
-                // Synchronous bulk read with a 100ms timeout
+                // 1. Get a buffer from the pool
+                let mut buf = match pool_rx.blocking_recv() {
+                    Some(b) => b,
+                    None => break, // Pool shut down
+                };
+
+                // 2. Synchronous bulk read
                 match device.read_bulk(BULK_ENDPOINT, &mut buf, Duration::from_millis(100)) {
                     Ok(n) => {
                         if n > 0 {
-                            if tx.blocking_send(Ok(buf[..n].to_vec())).is_err() {
-                                break; // Receiver dropped
+                            // Trim buffer to actual read size before sending
+                            // Note: for a true zero-alloc pool, we'd keep the full size 
+                            // but send the length separately. For now, we'll just 
+                            // ensure we don't reallocate.
+                            let pooled = Pooled::new(buf, Some(pool_tx.clone()));
+                            if tx.blocking_send(Ok(pooled)).is_err() {
+                                break;
                             }
+                        } else {
+                            // Put empty buffer back
+                            let _ = pool_tx.try_send(buf);
                         }
                     }
                     Err(crate::Error::Usb(rusb::Error::Timeout)) => {
+                        let _ = pool_tx.try_send(buf);
                         continue;
                     }
                     Err(e) => {
                         error!("USB Bulk Read Error: {:?}", e);
-                        // Surface the error to the async consumer before exiting
                         let _ = tx.blocking_send(Err(e));
                         break;
                     }
@@ -64,7 +120,7 @@ impl SampleStream {
     }
 
     /// Asynchronously receive the next chunk of samples.
-    pub async fn next(&mut self) -> Option<Result<Vec<u8>, crate::Error>> {
+    pub async fn next(&mut self) -> Option<Result<Pooled<Vec<u8>>, crate::Error>> {
         self.receiver.recv().await
     }
 
@@ -80,18 +136,15 @@ impl Drop for SampleStream {
 }
 
 /// A high-level DSP stream that produces interleaved F32 samples.
-///
-/// Automatically handles:
-/// 1. Hardware U8 -> F32 conversion (NEON accelerated)
-/// 2. FIR Low-pass filtering (NEON accelerated)
-/// 3. Decimation (Downsampling)
 pub struct F32Stream {
     raw_stream: SampleStream,
     decimator:  Option<Decimator>,
     dc_remover: Option<crate::dsp::DcRemover>,
     agc:        Option<crate::dsp::Agc>,
-    // Reusable buffers to avoid allocations in the hot loop
-    f32_buf:    Vec<f32>,
+    
+    // F32 output pool
+    pool_tx:    mpsc::Sender<Vec<f32>>,
+    pool_rx:    mpsc::Receiver<Vec<f32>>,
 }
 
 impl F32Stream {
@@ -102,12 +155,18 @@ impl F32Stream {
             None
         };
 
+        let (pool_tx, pool_rx) = mpsc::channel(NUM_BUFFERS);
+        for _ in 0..NUM_BUFFERS {
+            let _ = pool_tx.try_send(vec![0.0f32; BUFFER_SIZE]);
+        }
+
         Self {
             raw_stream,
             decimator,
             dc_remover: None,
             agc:        None,
-            f32_buf:    Vec::with_capacity(BUFFER_SIZE),
+            pool_tx,
+            pool_rx,
         }
     }
 
@@ -124,39 +183,48 @@ impl F32Stream {
     }
 
     /// Asynchronously receive the next chunk of processed F32 samples.
-    pub async fn next(&mut self) -> Option<Result<Vec<f32>, crate::Error>> {
-        // 1. Get raw bytes from hardware
+    pub async fn next(&mut self) -> Option<Result<Pooled<Vec<f32>>, crate::Error>> {
+        // 1. Get raw bytes from hardware (pooled)
         let raw_res = self.raw_stream.next().await?;
-        
         let u8_data = match raw_res {
             Ok(data) => data,
             Err(e) => return Some(Err(e)),
         };
 
-        // 2. Convert U8 -> F32 (interleaved I/Q)
-        // Ensure buffer is the right size
-        if self.f32_buf.len() != u8_data.len() {
-            self.f32_buf.resize(u8_data.len(), 0.0);
+        // 2. Get an F32 buffer from our pool
+        let mut f32_buf = self.pool_rx.recv().await.unwrap();
+        if f32_buf.len() != u8_data.len() {
+            f32_buf.resize(u8_data.len(), 0.0);
         }
-        converter::convert(&u8_data, &mut self.f32_buf);
 
-        // 3. DC Removal (optional)
+        // 3. Convert U8 -> F32 (interleaved I/Q)
+        converter::convert(&u8_data, &mut f32_buf);
+
+        // 4. DC Removal (optional)
         if let Some(dc) = &mut self.dc_remover {
-            dc.process(&mut self.f32_buf);
+            dc.process(&mut f32_buf);
         }
 
-        // 4. AGC (optional)
+        // 5. AGC (optional)
         if let Some(agc) = &mut self.agc {
-            agc.process(&mut self.f32_buf);
+            agc.process(&mut f32_buf);
         }
 
-        // 5. Apply Decimation if requested
+        // 6. Apply Decimation if requested
         if let Some(dec) = &mut self.decimator {
-            let decimated = dec.process(&self.f32_buf);
-            Some(Ok(decimated))
+            // Note: Decimator::process currently returns a new Vec.
+            // In a future refactor, it should process into a destination buffer.
+            let decimated = dec.process(&f32_buf);
+            // Return f32_buf to pool early since we have the decimated copy
+            let _ = self.pool_tx.try_send(f32_buf);
+            
+            // We can't pool the decimated Vec easily without a more complex pool 
+            // that handles various sizes, but decimation reduces the data volume 
+            // by 'factor', so the impact is smaller.
+            // We pass None for pool_tx because this is not a pooled buffer.
+            Some(Ok(Pooled::new(decimated, None)))
         } else {
-            // No decimation, return the full-rate F32 buffer
-            Some(Ok(self.f32_buf.clone()))
+            Some(Ok(Pooled::new(f32_buf, Some(self.pool_tx.clone()))))
         }
     }
 

@@ -39,7 +39,8 @@ impl TcpServer {
             while let Some(res) = raw_stream.next().await {
                 match res {
                     Ok(samples) => {
-                        let _ = tx_clone.send(Arc::new(samples));
+                        // Clone once into an Arc for broadcasting to multiple clients
+                        let _ = tx_clone.send(Arc::new(samples.to_vec()));
                     }
                     Err(e) => {
                         error!("Hardware stream error: {:?}", e);
