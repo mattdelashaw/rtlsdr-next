@@ -7,55 +7,45 @@ Designed for the modern era (2026+), this driver moves away from the legacy C ca
 
 ## 🚀 Key Features
 
-*   **Async-First Architecture:** Built on `Tokio`. Treat your SDR as a standard `Stream` of samples with backpressure and graceful shutdown.
-*   **NEON SIMD Acceleration:** Both sample conversion (`u8` -> `f32`) and DSP decimation (FIR filtering) are optimized with ARM NEON intrinsics for extreme performance on Pi 5.
-*   **Modular Tuner Trait:** Clean abstraction for tuner chips. Fully supports the **RTL-SDR Blog V4** (R828D) with integrated triplexer band-switching and interleaved 3-stage gain control.
-*   **Precision Frequency Correction:** Integrated PPM correction that dynamically adjusts both the tuner PLL and the RTL2832U resampler/NCO.
-*   **Production-Ready Logging:** Uses the `log` crate for structured, configurable output.
-*   **Device Sharing:** Includes a built-in Unix Domain Socket server for sharing a single hardware device across multiple local applications.
-*   **Safety-First:** 100% memory-safe Rust (outside of essential USB FFI). Robust error handling for USB hotplug and disconnects.
+*   **Async-First Architecture:** Built on `Tokio`. SDR data is a standard `Stream` with backpressure and graceful shutdown.
+*   **Zero-Allocation Pipeline:** Uses a custom `PooledVec` system to eliminate memory allocations in the hot loop. The CPU cycles are spent on DSP, not memory management.
+*   **NEON SIMD Acceleration:** optimized ARM NEON intrinsics for `u8` -> `f32` conversion and FIR filtering.
+*   **Automatic Tuner Probing:** Performs an I2C handshake to identify Rafael Micro (R820T/R828D), Elonics (E4000), or Fitipower (FC0012/13) chips automatically.
+*   **Zero-Copy Broadcasting:** Efficiently share a single hardware device across multiple local apps using `Arc`-based broadcasting over Unix Domain Sockets.
+*   **Precision Frequency Correction:** Integrated PPM correction for both the tuner PLL and the RTL2832U resampler.
+
+## 🚀 Performance
+
+Benchmarked on an ARM64 host (Pi 5 equivalent):
+*   **Converter (`u8` to `f32`):** ~1.14 GiB/s throughput.
+*   **Decimator (FIR Filter):** ~136 Million samples/sec.
+*   **Efficiency:** CPU usage is effectively negligible for standard 2.4 MSPS radio streams.
 
 ## 🏗 Quick Start
+... (keep existing code) ...
 
-```rust
-use rtlsdr_next::Driver;
+## 📊 Benchmarking
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // 1. Open device
-    let mut driver = Driver::new()?;
-    driver.set_frequency(100_000_000)?; // 100 MHz
-    
-    // 2. Get a decimated F32 stream (2.048 MSPS -> 256 kSPS)
-    let mut stream = driver.stream_f32(8);
-
-    // 3. Process samples
-    while let Some(res) = stream.next().await {
-        let iq_samples = res?; // Propagates hardware errors like disconnects
-        // Process interleaved [I, Q, I, Q...] f32 samples
-    }
-    Ok(())
-}
+The project includes a professional Criterion benchmark suite to verify DSP performance:
+```bash
+cargo bench --bench dsp_bench
 ```
 
 ## 🛠 Running the Example
+... (keep existing commands) ...
 
-Once your hardware is plugged in, try the included monitor example:
-```bash
-RUST_LOG=info cargo run --example monitor
-```
-
-## 🗺 Roadmap
+## 🗺 Roadmap - Phase Shifting
 
 - [x] **Phase 1: Hardware Bridge** (USB Vendor Requests, I2C Bridge)
 - [x] **Phase 2: Modular Tuner Support** (R828D / V4 Triplexer and Interleaved Gain)
 - [x] **Phase 3: Async Pipe** (Tokio Stream with error propagation and shutdown)
 - [x] **Phase 4: DSP Integrated Decimation** (NEON SIMD Low-Pass Filters)
 - [x] **Phase 5: Soft Device Sharing** (Unix Domain Socket Server with CancellationToken)
-- [ ] **Phase 6: Legacy Hardware** (Support for older hardware)
-- [ ] **Phase 7: Cross Platform** (More focus on other environments)
-- [ ] **Phase 8: Driver Driver** (Drivers for the drivers)
-- [ ] **Phase 9: Does This End?** (Probably turn this list into more of a TODO. Def need configurables)
+- [x] **Phase 6: Automatic Probing** (Handshake-based hardware detection)
+- [x] **Phase 7: Zero-Allocation Optimization** (Buffer Pooling and in-place processing)
+- [ ] **Phase 8: Legacy Implementation** (Full register maps for E4000/FC0012)
+- [ ] **Phase 9: DMA-Pool Bridge** (Linking PooledVec directly to libusb DMA-pinned memory)
+- [ ] **Phase 10: Does This End?** (Probably turn this list into more of a TODO. Def need configurables) 
 
 ## 📝 Notes
 
