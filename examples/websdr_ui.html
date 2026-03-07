@@ -32,8 +32,8 @@
     <div class="status" id="status">Connecting...</div>
 
     <script>
-        const ws = new WebSocket(`ws://${location.hostname || 'localhost'}:8080/ws`);
-        ws.binaryType = 'arraybuffer';
+        let ws;
+        let reconnectDelay = 1000;
         const canvas = document.getElementById('waterfall');
         const ctx = canvas.getContext('2d');
         const status = document.getElementById('status');
@@ -43,59 +43,85 @@
         
         // Audio logic
         let audioCtx = null;
+        let nextStartTime = 0;
         const SAMPLE_RATE = 51200; // Match backend decimation
         
-        ws.onopen = () => { status.innerText = 'Connected to WebSDR Backend'; };
-        ws.onerror = () => { status.innerText = 'Error connecting to backend'; };
+        function connect() {
+            ws = new WebSocket(`ws://${location.hostname || 'localhost'}:8080/ws`);
+            ws.binaryType = 'arraybuffer';
 
-        ws.onmessage = (event) => {
-            if (typeof event.data === 'string') {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'hardwareinfo') {
-                    status.innerText = `Hardware: ${msg.manufacturer} ${msg.product} (V4: ${msg.is_v4})`;
+            ws.onopen = () => { 
+                status.innerText = 'Connected to WebSDR Backend'; 
+                reconnectDelay = 1000;
+            };
+
+            ws.onclose = () => {
+                status.innerText = `Disconnected. Reconnecting in ${reconnectDelay/1000}s...`;
+                setTimeout(connect, reconnectDelay);
+                reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+            };
+
+            ws.onerror = () => { 
+                status.innerText = 'WebSocket Error'; 
+            };
+
+            ws.onmessage = (event) => {
+                if (typeof event.data === 'string') {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'hardwareinfo') {
+                        status.innerText = `Hardware: ${msg.manufacturer} ${msg.product} (V4: ${msg.is_v4})`;
+                    }
+                    return;
                 }
-                return;
-            }
 
-            // Handle Binary Data
-            const buffer = event.data;
-            const view = new DataView(buffer);
-            const type = String.fromCharCode(view.getUint8(0));
+                // Handle Binary Data
+                const buffer = event.data;
+                const view = new DataView(buffer);
+                const type = String.fromCharCode(view.getUint8(0));
 
-            if (type === 'W') {
-                // Waterfall Frame
-                const magnitudes = new Uint8Array(buffer, 1);
-                // Shift existing canvas down
-                ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 1, canvas.width, canvas.height);
-                // Draw new top line
-                for (let i = 0; i < magnitudes.length; i++) {
-                    const m = magnitudes[i];
-                    rowData.data[i * 4 + 0] = m > 128 ? m : 0; // Red
-                    rowData.data[i * 4 + 1] = m;               // Green
-                    rowData.data[i * 4 + 2] = 255 - m;         // Blue
-                    rowData.data[i * 4 + 3] = 255;             // Alpha
+                if (type === 'W') {
+                    // Waterfall Frame
+                    const magnitudes = new Uint8Array(buffer, 1);
+                    ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 1, canvas.width, canvas.height);
+                    for (let i = 0; i < magnitudes.length; i++) {
+                        const m = magnitudes[i];
+                        rowData.data[i * 4 + 0] = m > 128 ? m : 0; 
+                        rowData.data[i * 4 + 1] = m;               
+                        rowData.data[i * 4 + 2] = 255 - m;         
+                        rowData.data[i * 4 + 3] = 255;             
+                    }
+                    ctx.putImageData(rowData, 0, 0);
+                } else if (type === 'A' && audioCtx) {
+                    // Audio Frame (f32 samples)
+                    const samples = new Float32Array(buffer, 1);
+                    const audioBuffer = audioCtx.createBuffer(1, samples.length, SAMPLE_RATE);
+                    audioBuffer.getChannelData(0).set(samples);
+                    const source = audioCtx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioCtx.destination);
+                    
+                    const currentTime = audioCtx.currentTime;
+                    if (nextStartTime < currentTime) {
+                        nextStartTime = currentTime + 0.05; // 50ms guard buffer
+                    }
+                    source.start(nextStartTime);
+                    nextStartTime += audioBuffer.duration;
                 }
-                ctx.putImageData(rowData, 0, 0);
-            } else if (type === 'A' && audioCtx) {
-                // Audio Frame (f32 samples)
-                const samples = new Float32Array(buffer, 1);
-                const audioBuffer = audioCtx.createBuffer(1, samples.length, SAMPLE_RATE);
-                audioBuffer.getChannelData(0).set(samples);
-                const source = audioCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioCtx.destination);
-                source.start();
-            }
-        };
+            };
+        }
 
         function setFreq() {
             const hz = parseInt(document.getElementById('freq').value);
-            ws.send(JSON.stringify({ type: 'setfrequency', hz }));
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'setfrequency', hz }));
+            }
         }
 
         function setGain() {
             const db = parseFloat(document.getElementById('gain').value);
-            ws.send(JSON.stringify({ type: 'setgain', db }));
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'setgain', db }));
+            }
         }
 
         function startAudio() {
@@ -106,6 +132,9 @@
                 document.getElementById('audio-btn').innerText = 'Audio Active';
             }
         }
+
+        // Start connection
+        connect();
     </script>
 </body>
 </html>

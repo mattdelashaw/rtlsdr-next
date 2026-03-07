@@ -1,6 +1,6 @@
 use rtlsdr_next::Driver;
 use std::time::Instant;
-use log::info;
+use log::{info, error};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -47,39 +47,49 @@ async fn main() -> anyhow::Result<()> {
     let mut block_count = 0;
 
     // 4. Main processing loop
-    while let Some(res) = stream.next().await {
-        let iq_data = match res {
-            Ok(data) => data,
-            Err(e) => {
-                eprintln!("\nHardware stream error: {:?}", e);
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("\nShutdown requested...");
                 break;
             }
-        };
+            res = stream.next() => {
+                let iq_data = match res {
+                    Some(Ok(data)) => data,
+                    Some(Err(e)) => {
+                        error!("\nHardware stream error: {:?}", e);
+                        break;
+                    }
+                    None => break,
+                };
 
-        total_samples += iq_data.len() / 2; // I and Q are interleaved
-        block_count += 1;
+                total_samples += iq_data.len() / 2; // I and Q are interleaved
+                block_count += 1;
 
-        // Calculate basic statistics every 10 blocks to show the driver is working
-        if block_count % 10 == 0 {
-            let mut mag_sum = 0.0f32;
-            for i in (0..iq_data.len()).step_by(2) {
-                let i_val = iq_data[i];
-                let q_val = iq_data[i+1];
-                mag_sum += (i_val * i_val + q_val * q_val).sqrt();
+                // Calculate basic statistics every 10 blocks to show the driver is working
+                if block_count % 10 == 0 {
+                    let mut mag_sum = 0.0f32;
+                    for i in (0..iq_data.len()).step_by(2) {
+                        let i_val = iq_data[i];
+                        let q_val = iq_data[i+1];
+                        mag_sum += (i_val * i_val + q_val * q_val).sqrt();
+                    }
+                    let avg_mag = mag_sum / (iq_data.len() / 2) as f32;
+                    
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let throughput = (total_samples as f64 / elapsed) / 1000.0;
+
+                    print!(
+                        "\rBlocks: {:<5} | Avg Mag: {:.4} | Throughput: {:.2} kSPS",
+                        block_count, avg_mag, throughput
+                    );
+                    use std::io::Write;
+                    std::io::stdout().flush()?;
+                }
             }
-            let avg_mag = mag_sum / (iq_data.len() / 2) as f32;
-            
-            let elapsed = start_time.elapsed().as_secs_f64();
-            let throughput = (total_samples as f64 / elapsed) / 1000.0;
-
-            print!(
-                "\rBlocks: {:<5} | Avg Mag: {:.4} | Throughput: {:.2} kSPS",
-                block_count, avg_mag, throughput
-            );
-            use std::io::Write;
-            std::io::stdout().flush()?;
         }
     }
 
+    info!("Cleaning up...");
     Ok(())
 }

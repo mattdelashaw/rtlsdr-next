@@ -1,6 +1,6 @@
 use rtlsdr_next::Driver;
 use rtlsdr_next::dsp::FmDemodulator;
-use log::info;
+use log::{info, error};
 use std::time::Instant;
 
 #[tokio::main]
@@ -36,28 +36,41 @@ async fn main() -> anyhow::Result<()> {
     let mut block_count = 0;
     let start_time = Instant::now();
 
-    while let Some(res) = stream.next().await {
-        let iq_data = res?;
-        
-        // Software FM Demodulation
-        let audio = fm.process(&iq_data);
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("\nShutdown requested...");
+                break;
+            }
+            res = stream.next() => {
+                let iq_data = match res {
+                    Some(Ok(data)) => data,
+                    Some(Err(e)) => {
+                        error!("Stream error: {:?}", e);
+                        break;
+                    }
+                    None => break,
+                };
+                
+                // Software FM Demodulation
+                let audio = fm.process(&iq_data);
 
-        block_count += 1;
-        if block_count % 20 == 0 {
-            let elapsed = start_time.elapsed().as_secs_f64();
-            let audio_mag: f32 = audio.iter().map(|v| v.abs()).sum::<f32>() / audio.len() as f32;
-            
-            print!(
-                "\rBlocks: {:<5} | Audio Avg Mag: {:.4} | Elapsed: {:.1}s",
-                block_count, audio_mag, elapsed
-            );
-            use std::io::Write;
-            std::io::stdout().flush()?;
+                block_count += 1;
+                if block_count % 20 == 0 {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let audio_mag: f32 = audio.iter().map(|v| v.abs()).sum::<f32>() / audio.len() as f32;
+                    
+                    print!(
+                        "\rBlocks: {:<5} | Audio Avg Mag: {:.4} | Elapsed: {:.1}s",
+                        block_count, audio_mag, elapsed
+                    );
+                    use std::io::Write;
+                    std::io::stdout().flush()?;
+                }
+            }
         }
-        
-        // In a real app, you would send `audio` to a soundcard or file here.
-        // For this example, we just process them and print stats.
     }
 
+    info!("Cleaning up...");
     Ok(())
 }

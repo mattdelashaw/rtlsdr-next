@@ -49,3 +49,9 @@ path = "examples/rtl_tcp.rs"
 [[example]]
 name = "websdr"
 path = "examples/websdr.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
