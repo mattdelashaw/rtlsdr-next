@@ -1,5 +1,5 @@
 # rtlsdr-next 📡
-❗*Not hardware tested*❗
+❗*Not hardware tested - bare with me here(README) too*❗
 
 A high-performance, asynchronous, and safety-first Rust driver for RTL2832U-based Software Defined Radios (SDR). 
 
