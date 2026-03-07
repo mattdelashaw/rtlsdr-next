@@ -81,15 +81,11 @@ impl Driver {
             TunerType::R820T => {
                 Box::new(tuners::r828d::R828D::new(device.clone(), is_v4))
             }
-            // The V4 is always an R828D (which identifies as R820T family)
-            // If probe failed but we know it's a V4 from EEPROM, force R828D?
-            // For now, let's assume probe works.
-            
-            TunerType::Unknown(_) => {
-                // If unknown, fallback to R828D but warn? Or fail?
-                // Given the goal is "prepare the probes", let's be strict for now
-                // to prove the probing works.
-                return Err(Error::UnsupportedTuner(format!("Unknown tuner: {:?}", tuner_type)));
+            TunerType::Unknown(_) if is_v4 => {
+                // EEPROM confirmed V4 but I2C probe failed — power sequencing
+                // issue or cold start. Trust the EEPROM and proceed with R828D.
+                log::warn!("Tuner I2C probe returned Unknown but EEPROM says V4 — forcing R828D");
+                Box::new(tuners::r828d::R828D::new(device.clone(), true))
             }
             _ => {
                 return Err(Error::UnsupportedTuner(format!("{:?} not yet supported", tuner_type)));
@@ -199,10 +195,13 @@ impl Driver {
             .map_err(|e| Error::Tuner(format!("Server error: {:?}", e)))
     }
 
-    /// Start an rtl_tcp compatible server allowing standard SDR apps to connect.
-    pub async fn start_rtl_tcp(&self, addr: &str) -> Result<TcpServer> {
-        let server_driver = Driver::new()?;
-        TcpServer::start(server_driver, addr)
+    /// Start an rtl_tcp compatible server, consuming the Driver.
+    ///
+    /// Takes ownership because the TCP server needs exclusive access to the
+    /// hardware stream — there is only one dongle. Call this instead of
+    /// keeping the Driver around.
+    pub async fn start_rtl_tcp(self, addr: &str) -> Result<TcpServer> {
+        TcpServer::start(self, addr)
             .await
             .map_err(|e| Error::Tuner(format!("TCP Server error: {:?}", e)))
     }

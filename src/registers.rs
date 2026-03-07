@@ -207,28 +207,6 @@ pub mod i2c {
 }
 
 // ============================================================
-// Tuner Identification (for probing)
-// ============================================================
-
-pub mod tuner_ids {
-    pub const R82XX_I2C_ADDR: u8 = 0x34;
-    pub const R82XX_CHECK_REG: u8 = 0x00;
-    pub const R82XX_CHECK_VAL: u8 = 0x69;
-
-    pub const E4000_I2C_ADDR: u8 = 0xc8;
-    pub const E4000_CHECK_REG: u8 = 0x02;
-    pub const E4000_CHECK_VAL: u8 = 0x40;
-
-    pub const FC0012_I2C_ADDR: u8 = 0xc6;
-    pub const FC0012_CHECK_REG: u8 = 0x00;
-    pub const FC0012_CHECK_VAL: u8 = 0xa1;
-
-    pub const FC0013_I2C_ADDR: u8 = 0xc6;
-    pub const FC0013_CHECK_REG: u8 = 0x00;
-    pub const FC0013_CHECK_VAL: u8 = 0xa3;
-}
-
-// ============================================================
 // R828D tuner I2C address and shadow register layout
 // ============================================================
 
@@ -321,6 +299,35 @@ pub mod r828d {
     /// REG_0F: Bias-T on
     pub const BIAS_T_ON:  u8 = 0x01;
     pub const BIAS_T_OFF: u8 = 0x00;
+}
+
+// ============================================================
+// Tuner I2C probe identifiers
+//
+// Used by Device::probe_tuner() to auto-detect the attached tuner chip.
+// Each entry is (i2c_addr, check_reg, expected_val).
+// Sources: librtlsdr tuner detection table, osmocom/rtl-sdr.
+// ============================================================
+
+pub mod tuner_ids {
+    // ── R820T / R820T2 / R828D ───────────────────────────────────────────
+    /// I2C address shared by the entire R82XX family
+    pub const R82XX_I2C_ADDR:  u8 = 0x34;
+    /// Chip ID register
+    pub const R82XX_CHECK_REG: u8 = 0x00;
+    /// Expected chip ID value (bits [5:4] = 0b10 → masked to 0x60)
+    pub const R82XX_CHECK_VAL: u8 = 0x69; // raw PLL status — any non-zero value is a hit
+
+    // ── E4000 ─────────────────────────────────────────────────────────────
+    pub const E4000_I2C_ADDR:  u8 = 0xc8;
+    pub const E4000_CHECK_REG: u8 = 0x02;
+    pub const E4000_CHECK_VAL: u8 = 0x40;
+
+    // ── FC0012 / FC0013 ───────────────────────────────────────────────────
+    pub const FC0012_I2C_ADDR:   u8 = 0xc6;
+    pub const FC0012_CHECK_REG:  u8 = 0x00;
+    pub const FC0012_CHECK_VAL:  u8 = 0xa1; // FC0012
+    pub const FC0013_CHECK_VAL:  u8 = 0xa3; // FC0013
 }
 
 // ============================================================

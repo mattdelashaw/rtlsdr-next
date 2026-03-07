@@ -1,6 +1,7 @@
 use rusb::{Context, DeviceHandle, UsbContext};
 use crate::error::{Error, Result};
-use crate::registers::Request;
+use crate::registers::{self, tuner_ids, Request};
+use crate::tuner::TunerType;
 use std::time::Duration;
 use log::info;
 use std::slice;
@@ -188,57 +189,51 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
 // Device register / I2C / bulk methods
 // ============================================================
 
-use crate::registers::{self, tuner_ids};
-use crate::tuner::TunerType;
-
-// ... (existing imports)
-
 impl<T: UsbContext> Device<T> {
     /// Probe the I2C bus to identify the connected tuner.
     pub fn probe_tuner(&self) -> Result<TunerType> {
         // Enable I2C repeater
         self.write_reg(
-            registers::Block::Demod as u16, 
-            registers::demod::P0_IIC_REPEAT, 
-            0x08 // bit 3 = 1
+            registers::Block::Demod as u16,
+            registers::demod::P0_IIC_REPEAT,
+            0x08,
         )?;
 
         let mut found = TunerType::Unknown(0);
 
-        // 1. Check for R820T / R828D (most common)
-        if let Ok(data) = self.i2c_read(tuner_ids::R82XX_I2C_ADDR, tuner_ids::R82XX_CHECK_REG, 1) {
-            if !data.is_empty() && data[0] == tuner_ids::R82XX_CHECK_VAL {
-                found = TunerType::R820T;
-            }
+        // 1. R820T / R820T2 / R828D — check that the I2C address responds.
+        //    The chip ID register (0x00) returns a status byte; we just need
+        //    the read to succeed. The V4 vs V3 distinction is made via EEPROM
+        //    strings (already in DeviceInfo.is_v4), not the tuner ID.
+        if self.i2c_read(tuner_ids::R82XX_I2C_ADDR, tuner_ids::R82XX_CHECK_REG, 1).is_ok() {
+            found = TunerType::R820T;
         }
 
-        // 2. Check for E4000 (if not found yet)
+        // 2. E4000
         if let TunerType::Unknown(_) = found {
-             if let Ok(data) = self.i2c_read(tuner_ids::E4000_I2C_ADDR, tuner_ids::E4000_CHECK_REG, 1) {
-                if !data.is_empty() && data[0] == tuner_ids::E4000_CHECK_VAL {
+            if let Ok(data) = self.i2c_read(tuner_ids::E4000_I2C_ADDR, tuner_ids::E4000_CHECK_REG, 1) {
+                if data.first() == Some(&tuner_ids::E4000_CHECK_VAL) {
                     found = TunerType::E4000;
                 }
             }
         }
 
-        // 3. Check for FC0012 (if not found yet)
+        // 3. FC0012 / FC0013
         if let TunerType::Unknown(_) = found {
             if let Ok(data) = self.i2c_read(tuner_ids::FC0012_I2C_ADDR, tuner_ids::FC0012_CHECK_REG, 1) {
-                if !data.is_empty() {
-                    if data[0] == tuner_ids::FC0012_CHECK_VAL {
-                        found = TunerType::FC0012;
-                    } else if data[0] == tuner_ids::FC0013_CHECK_VAL {
-                        found = TunerType::FC0013;
-                    }
+                match data.first() {
+                    Some(&v) if v == tuner_ids::FC0012_CHECK_VAL => found = TunerType::FC0012,
+                    Some(&v) if v == tuner_ids::FC0013_CHECK_VAL => found = TunerType::FC0013,
+                    _ => {}
                 }
             }
         }
 
         // Disable I2C repeater
         self.write_reg(
-            registers::Block::Demod as u16, 
-            registers::demod::P0_IIC_REPEAT, 
-            0x00
+            registers::Block::Demod as u16,
+            registers::demod::P0_IIC_REPEAT,
+            0x00,
         )?;
 
         Ok(found)

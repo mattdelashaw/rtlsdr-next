@@ -4,27 +4,32 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
+[lib]
+name = "rtlsdr_next"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = "1.0.102"
+axum = { version = "0.8.1", features = ["ws"] }
 byteorder = "1.5.0"
+futures-util = { version = "0.3.32", features = ["sink"] }
 libc = "0.2.182"
 libusb1-sys = "0.7.0"
 log = "0.4.22"
 rusb = "0.9.4"
+rustfft = "6.2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full"] }
 tokio-util = { version = "0.7.13", features = ["rt"] }
-zerocopy = { version = "0.8.40", features = ["derive"] }
-axum = { version = "0.8.1", features = ["ws"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-rustfft = "6.2.0"
 tower-http = { version = "0.6.2", features = ["fs", "cors"] }
-futures-util = { version = "0.3.32", features = ["sink"] }
+zerocopy = { version = "0.8.40", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.8.2"
 env_logger = "0.11.5"
+tokio = { version = "1", features = ["full", "test-util"] }
 
 [[bench]]
 name = "dsp_bench"
