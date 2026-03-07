@@ -54,6 +54,7 @@ RUST_LOG=info cargo run --example monitor
 - [x] **Phase 5: Soft Device Sharing** (Unix Domain Socket Server with CancellationToken)
 - [ ] **Phase 6: Legacy Hardware** (Support for older hardware)
 - [ ] **Phase 7: Cross Platform** (More focus on other environments)
+- [ ] **Phase 8: Driver Driver** (Drivers for the drivers)
 
 ## 📝 Notes
 

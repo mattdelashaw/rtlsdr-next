@@ -88,6 +88,8 @@ impl Drop for SampleStream {
 pub struct F32Stream {
     raw_stream: SampleStream,
     decimator:  Option<Decimator>,
+    dc_remover: Option<crate::dsp::DcRemover>,
+    agc:        Option<crate::dsp::Agc>,
     // Reusable buffers to avoid allocations in the hot loop
     f32_buf:    Vec<f32>,
 }
@@ -103,8 +105,22 @@ impl F32Stream {
         Self {
             raw_stream,
             decimator,
-            f32_buf: Vec::with_capacity(BUFFER_SIZE),
+            dc_remover: None,
+            agc:        None,
+            f32_buf:    Vec::with_capacity(BUFFER_SIZE),
         }
+    }
+
+    /// Enable DC removal on the stream.
+    pub fn with_dc_removal(mut self, alpha: f32) -> Self {
+        self.dc_remover = Some(crate::dsp::DcRemover::new(alpha));
+        self
+    }
+
+    /// Enable Automatic Gain Control (AGC) on the stream.
+    pub fn with_agc(mut self, target: f32, attack: f32, decay: f32) -> Self {
+        self.agc = Some(crate::dsp::Agc::new(target, attack, decay));
+        self
     }
 
     /// Asynchronously receive the next chunk of processed F32 samples.
@@ -124,7 +140,17 @@ impl F32Stream {
         }
         converter::convert(&u8_data, &mut self.f32_buf);
 
-        // 3. Apply Decimation if requested
+        // 3. DC Removal (optional)
+        if let Some(dc) = &mut self.dc_remover {
+            dc.process(&mut self.f32_buf);
+        }
+
+        // 4. AGC (optional)
+        if let Some(agc) = &mut self.agc {
+            agc.process(&mut self.f32_buf);
+        }
+
+        // 5. Apply Decimation if requested
         if let Some(dec) = &mut self.decimator {
             let decimated = dec.process(&self.f32_buf);
             Some(Ok(decimated))

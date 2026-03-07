@@ -259,6 +259,117 @@ unsafe fn fir_decimate_neon(
 }
 
 // ============================================================
+// DC Removal
+// ============================================================
+
+/// A one-pole IIR high-pass filter for removing DC offset.
+///
+/// Keeps a running average of the signal and subtracts it.
+pub struct DcRemover {
+    avg_i: f32,
+    avg_q: f32,
+    alpha: f32,
+}
+
+impl DcRemover {
+    pub fn new(alpha: f32) -> Self {
+        Self { avg_i: 0.0, avg_q: 0.0, alpha }
+    }
+
+    /// Process a block of interleaved I/Q samples.
+    pub fn process(&mut self, data: &mut [f32]) {
+        for i in (0..data.len()).step_by(2) {
+            let i_val = data[i];
+            let q_val = data[i+1];
+
+            self.avg_i = (1.0 - self.alpha) * self.avg_i + self.alpha * i_val;
+            self.avg_q = (1.0 - self.alpha) * self.avg_q + self.alpha * q_val;
+
+            data[i]   = i_val - self.avg_i;
+            data[i+1] = q_val - self.avg_q;
+        }
+    }
+}
+
+// ============================================================
+// Automatic Gain Control (AGC)
+// ============================================================
+
+/// A simple feedback-loop AGC to maintain a target signal level.
+pub struct Agc {
+    gain:   f32,
+    target: f32,
+    attack: f32,
+    decay:  f32,
+}
+
+impl Agc {
+    pub fn new(target: f32, attack: f32, decay: f32) -> Self {
+        Self { gain: 1.0, target, attack, decay }
+    }
+
+    /// Process a block of interleaved I/Q samples.
+    pub fn process(&mut self, data: &mut [f32]) {
+        for i in (0..data.len()).step_by(2) {
+            let i_val = data[i];
+            let q_val = data[i+1];
+
+            let mag = (i_val * i_val + q_val * q_val).sqrt();
+            let error = self.target / (mag + 1e-6);
+
+            // Simple attack/decay logic
+            let coeff = if error < self.gain { self.attack } else { self.decay };
+            self.gain = (1.0 - coeff) * self.gain + coeff * error;
+
+            data[i]   *= self.gain;
+            data[i+1] *= self.gain;
+        }
+    }
+}
+
+// ============================================================
+// FM Demodulation
+// ============================================================
+
+/// A quadrature FM demodulator.
+///
+/// Produces real samples representing the instantaneous frequency
+/// (derivative of phase) of the complex input.
+pub struct FmDemodulator {
+    last_phase: f32,
+}
+
+impl FmDemodulator {
+    pub fn new() -> Self {
+        Self { last_phase: 0.0 }
+    }
+
+    /// Process a block of interleaved I/Q samples.
+    /// Returns a vector of real (f32) demodulated samples.
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        let mut output = Vec::with_capacity(input.len() / 2);
+        for i in (0..input.len()).step_by(2) {
+            let i_val = input[i];
+            let q_val = input[i+1];
+
+            let phase = q_val.atan2(i_val);
+            let mut diff = phase - self.last_phase;
+
+            // Phase wrap-around (-PI to PI)
+            if diff > std::f32::consts::PI {
+                diff -= 2.0 * std::f32::consts::PI;
+            } else if diff < -std::f32::consts::PI {
+                diff += 2.0 * std::f32::consts::PI;
+            }
+
+            output.push(diff);
+            self.last_phase = phase;
+        }
+        output
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -267,6 +378,58 @@ mod tests {
     use super::*;
 
     const EPS: f32 = 1e-5;
+
+    #[test]
+    fn test_dc_remover() {
+        let mut dc = DcRemover::new(0.01);
+        // Input with a 0.5 offset on both I and Q
+        let mut data = vec![1.5f32, 1.5, 1.5, 1.5, 1.5, 1.5];
+        // Process many samples to let the average settle
+        for _ in 0..1000 {
+            let mut block = vec![1.5f32, 1.5];
+            dc.process(&mut block);
+        }
+        dc.process(&mut data);
+        // After settling, it should be near zero
+        assert!(data[0].abs() < 0.1);
+        assert!(data[1].abs() < 0.1);
+    }
+
+    #[test]
+    fn test_agc() {
+        let mut agc = Agc::new(1.0, 0.01, 0.01);
+        // Input with small magnitude (0.1)
+        let mut data = vec![0.1f32, 0.0];
+        // Process many samples to let the gain settle
+        for _ in 0..1000 {
+            let mut block = vec![0.1f32, 0.0];
+            agc.process(&mut block);
+        }
+        agc.process(&mut data);
+        // Output magnitude should be close to target (1.0)
+        assert!((data[0].abs() - 1.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_fm_demod() {
+        let mut fm = FmDemodulator::new();
+        // A complex sine wave with constant frequency
+        // phase(t) = omega * t
+        // freq = d(phase)/dt = omega
+        let omega = 0.5f32;
+        let mut input = Vec::new();
+        for t in 0..100 {
+            let phase = omega * t as f32;
+            input.push(phase.cos());
+            input.push(phase.sin());
+        }
+        let output = fm.process(&input);
+        assert_eq!(output.len(), 100);
+        // Skip first sample (no last_phase)
+        for &v in &output[1..] {
+            assert!((v - omega).abs() < 1e-4);
+        }
+    }
 
     // ── FIR design ───────────────────────────────────────────────────────
 
