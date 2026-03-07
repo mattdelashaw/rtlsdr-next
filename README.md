@@ -43,9 +43,10 @@ cargo bench --bench dsp_bench
 - [x] **Phase 5: Soft Device Sharing** (Unix Domain Socket Server with CancellationToken)
 - [x] **Phase 6: Automatic Probing** (Handshake-based hardware detection)
 - [x] **Phase 7: Zero-Allocation Optimization** (Buffer Pooling and in-place processing)
-- [ ] **Phase 8: Legacy Implementation** (Full register maps for E4000/FC0012)
-- [ ] **Phase 9: DMA-Pool Bridge** (Linking PooledVec directly to libusb DMA-pinned memory)
-- [ ] **Phase 10: Does This End?** (Probably turn this list into more of a TODO. Def need configurables) 
+- [x] **Phase 8: DMA-Pool Bridge** (Linking PooledVec directly to libusb DMA-pinned memory)
+- [ ] **Phase 9: Legacy Implementation** (Full register maps for E4000/FC0012)
+- [ ] **Phase 10: Cross-Platform** (Ensure the `aarch64` benefits to are passed to everyone)
+- [ ] **Phase 11: Does This End?** (Probably turn this list into more of a TODO. Def need configurables) 
 
 ## 📝 Notes
 
