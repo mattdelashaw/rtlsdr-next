@@ -20,4 +20,7 @@ pub trait Tuner: Send + Sync {
     
     /// Toggle the Bias-T power.
     fn set_bias_t(&self, on: bool) -> Result<()>;
+
+    /// Set the crystal frequency correction in Parts Per Million (PPM).
+    fn set_ppm(&self, ppm: i32) -> Result<()>;
 }

@@ -4,16 +4,24 @@ use tokio::sync::broadcast;
 use std::sync::Arc;
 use std::path::Path;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use log::error;
 
 pub struct SharingServer {
     _broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
     _handle: JoinHandle<()>,
+    cancel_token: CancellationToken,
 }
 
 impl SharingServer {
     /// Start a new sharing server on the specified Unix Domain Socket path.
-    pub async fn start<P: AsRef<Path>>(path: P, mut sample_rx: broadcast::Receiver<Arc<Vec<u8>>>) -> IoResult<Self> {
+    pub async fn start<P: AsRef<Path>>(
+        path: P,
+        mut sample_rx: broadcast::Receiver<Arc<Vec<u8>>>
+    ) -> IoResult<Self> {
         let path = path.as_ref().to_owned();
+        let cancel_token = CancellationToken::new();
+        let cancel_clone = cancel_token.clone();
         
         // Clean up existing socket file if it exists
         if path.exists() {
@@ -27,36 +35,78 @@ impl SharingServer {
         // Task 1: Accept connections and pipe the broadcast to them
         let handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((mut socket, _)) => {
-                        let mut client_rx = tx_clone.subscribe();
-                        tokio::spawn(async move {
-                            while let Ok(samples) = client_rx.recv().await {
-                                if socket.write_all(&samples).await.is_err() {
-                                    break; // Client disconnected
-                                }
+                tokio::select! {
+                    _ = cancel_clone.cancelled() => break,
+                    accept_res = listener.accept() => {
+                        match accept_res {
+                            Ok((socket, _)) => {
+                                let mut socket: tokio::net::UnixStream = socket;
+                                let mut client_rx = tx_clone.subscribe();
+                                let cancel_client = cancel_clone.clone();
+                                tokio::spawn(async move {
+                                    loop {
+                                        tokio::select! {
+                                            _ = cancel_client.cancelled() => break,
+                                            recv_res = client_rx.recv() => {
+                                                match recv_res {
+                                                    Ok(samples) => {
+                                                        if socket.write_all(&samples).await.is_err() {
+                                                            break; // Client disconnected
+                                                        }
+                                                    }
+                                                    Err(_) => break, // Broadcast closed
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
                             }
-                        });
-                    }
-                    Err(e) => {
-                        eprintln!("Socket accept error: {:?}", e);
-                        break;
+                            Err(e) => {
+                                error!("Socket accept error: {:?}", e);
+                                break;
+                            }
+                        }
                     }
                 }
             }
+            // Cleanup socket file on exit
+            let _ = std::fs::remove_file(&path);
         });
 
         // Task 2: Relay hardware samples into our broadcast channel
         let tx_relay = tx.clone();
+        let cancel_relay = cancel_token.clone();
         tokio::spawn(async move {
-            while let Ok(samples) = sample_rx.recv().await {
-                let _ = tx_relay.send(samples);
+            loop {
+                tokio::select! {
+                    _ = cancel_relay.cancelled() => break,
+                    res = sample_rx.recv() => {
+                        match res {
+                            Ok(samples) => {
+                                let _ = tx_relay.send(samples);
+                            }
+                            Err(_) => break, // Upstream closed
+                        }
+                    }
+                }
             }
         });
 
         Ok(Self {
             _broadcast_tx: tx,
             _handle: handle,
+            cancel_token,
         })
+    }
+
+    /// Stop the server and clean up the socket file.
+    pub fn stop(&self) {
+        self.cancel_token.cancel();
+    }
+}
+
+impl Drop for SharingServer {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

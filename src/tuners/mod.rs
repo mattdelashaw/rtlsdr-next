@@ -11,4 +11,5 @@ impl Tuner for DummyTuner {
     fn set_gain(&self, db: f32) -> Result<f32> { Ok(db) }
     fn get_filters(&self) -> Vec<FilterRange> { vec![] }
     fn set_bias_t(&self, _on: bool) -> Result<()> { Ok(()) }
+    fn set_ppm(&self, _ppm: i32) -> Result<()> { Ok(()) }
 }

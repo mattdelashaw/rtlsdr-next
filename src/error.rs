@@ -21,6 +21,12 @@ pub enum Error {
     #[error("Timeout occurred during operation")]
     Timeout,
 
+    #[error("Invalid sample rate: {0} Hz (Valid range: 225 kSPS to 3.2 MSPS)")]
+    InvalidSampleRate(u32),
+
+    #[error("Device not initialized. Call new() first.")]
+    NotInitialized,
+
     #[error("Device not found")]
     NotFound,
 }

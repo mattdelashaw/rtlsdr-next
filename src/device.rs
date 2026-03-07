@@ -1,69 +1,124 @@
 use rusb::{Context, DeviceHandle, UsbContext};
 use crate::error::{Error, Result};
-use crate::registers::{Block, Request};
+use crate::registers::Request;
 use std::time::Duration;
+use log::info;
 use std::slice;
 use libusb1_sys as ffi;
 
 unsafe extern "C" {
-    fn libusb_dev_mem_alloc(dev_handle: *mut ffi::libusb_device_handle, len: libc::size_t) -> *mut u8;
-    fn libusb_dev_mem_free(dev_handle: *mut ffi::libusb_device_handle, ptr: *mut u8, len: libc::size_t) -> libc::c_int;
+    fn libusb_dev_mem_alloc(
+        dev_handle: *mut ffi::libusb_device_handle,
+        len: libc::size_t,
+    ) -> *mut u8;
+    fn libusb_dev_mem_free(
+        dev_handle: *mut ffi::libusb_device_handle,
+        ptr: *mut u8,
+        len: libc::size_t,
+    ) -> libc::c_int;
 }
 
+// ============================================================
+// USB identifiers
+// ============================================================
+
 const RTL2832U_VID: u16 = 0x0bda;
-const RTL2832U_PID: u16 = 0x2838; // Common PID for RTL2832U (RTL-SDR Blog V3/V4)
+const RTL2832U_PID: u16 = 0x2838;
+
+/// EEPROM strings that identify the RTL-SDR Blog V4 specifically.
+/// The driver checks for these exact strings to enable V4 triplexer logic.
+/// Source: RTL-SDR Blog quickstart guide — "do not change the EEPROM
+/// manufacturer or product strings as the drivers check for a specific string".
+const V4_MANUFACTURER: &str = "RTLSDRBlog";
+const V4_PRODUCT:      &str = "Blog V4";
+
+// ============================================================
+// DeviceInfo — returned from open() so callers know what they got
+// ============================================================
+
+/// Metadata probed during device open.
+#[derive(Debug, Clone)]
+pub struct DeviceInfo {
+    pub manufacturer: String,
+    pub product:      String,
+    /// True iff the EEPROM identifies this as an RTL-SDR Blog V4.
+    pub is_v4:        bool,
+}
+
+impl DeviceInfo {
+    fn probe<T: UsbContext>(handle: &DeviceHandle<T>) -> Self {
+        let descriptor = handle.device().device_descriptor()
+            .unwrap_or_else(|_| panic!("failed to read device descriptor"));
+
+        let timeout = Duration::from_millis(200);
+
+        let manufacturer = descriptor
+            .manufacturer_string_index()
+            .and_then(|idx| handle.read_string_descriptor_ascii(idx).ok())
+            .unwrap_or_default();
+
+        let product = descriptor
+            .product_string_index()
+            .and_then(|idx| handle.read_string_descriptor_ascii(idx).ok())
+            .unwrap_or_default();
+
+        let is_v4 = manufacturer.trim() == V4_MANUFACTURER
+                 && product.trim()      == V4_PRODUCT;
+
+        let _ = timeout; // timeout used implicitly by read_string_descriptor_ascii
+
+        Self { manufacturer, product, is_v4 }
+    }
+}
+
+// ============================================================
+// Device
+// ============================================================
 
 pub struct Device<T: UsbContext> {
     handle: DeviceHandle<T>,
+    pub info: DeviceInfo,
 }
+
+// ============================================================
+// DMA / Heap transport buffer
+// ============================================================
 
 pub enum BufferType {
     Dma(*mut u8),
     Heap(Vec<u8>),
 }
 
-/// A block of memory for USB transfers (DMA-capable if available, fallback to Heap).
+/// USB transfer buffer — DMA-pinned on Pi 5 / Linux RP1, heap elsewhere.
 pub struct TransportBuffer<'a, T: UsbContext> {
     device: &'a Device<T>,
-    inner: BufferType,
-    len: usize,
+    inner:  BufferType,
+    len:    usize,
 }
 
 impl<'a, T: UsbContext> TransportBuffer<'a, T> {
     pub fn new(device: &'a Device<T>, len: usize) -> Self {
         let raw_handle = device.handle.as_raw();
-        
-        // Attempt DMA allocation
         let ptr = unsafe { libusb_dev_mem_alloc(raw_handle, len as libc::size_t) };
-        
+
         if ptr.is_null() {
-            // Fallback for Windows/macOS/Standard Linux
-            Self {
-                device,
-                inner: BufferType::Heap(vec![0u8; len]),
-                len,
-            }
+            Self { device, inner: BufferType::Heap(vec![0u8; len]), len }
         } else {
-            // Success for performance-tuned Linux (Pi 5)
-            Self {
-                device,
-                inner: BufferType::Dma(ptr),
-                len,
-            }
+            Self { device, inner: BufferType::Dma(ptr), len }
         }
     }
 
     pub fn as_slice(&self) -> &[u8] {
         match &self.inner {
             BufferType::Dma(ptr) => unsafe { slice::from_raw_parts(*ptr, self.len) },
-            BufferType::Heap(v) => v.as_slice(),
+            BufferType::Heap(v)  => v.as_slice(),
         }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         match &mut self.inner {
             BufferType::Dma(ptr) => unsafe { slice::from_raw_parts_mut(*ptr, self.len) },
-            BufferType::Heap(v) => v.as_mut_slice(),
+            BufferType::Heap(v)  => v.as_mut_slice(),
         }
     }
 }
@@ -72,97 +127,220 @@ impl<'a, T: UsbContext> Drop for TransportBuffer<'a, T> {
     fn drop(&mut self) {
         if let BufferType::Dma(ptr) = self.inner {
             let raw_handle = self.device.handle.as_raw();
-            unsafe {
-                libusb_dev_mem_free(raw_handle, ptr, self.len as libc::size_t);
-            }
+            unsafe { libusb_dev_mem_free(raw_handle, ptr, self.len as libc::size_t); }
         }
     }
 }
 
 unsafe impl<'a, T: UsbContext> Send for TransportBuffer<'a, T> {}
 
+// ============================================================
+// HardwareInterface trait
+// ============================================================
+
 pub trait HardwareInterface: Send + Sync {
-    fn read_reg(&self, block: Block, addr: u16) -> Result<u8>;
-    fn write_reg(&self, block: Block, addr: u16, val: u8) -> Result<()>;
-    fn i2c_read(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>>;
+    fn read_reg(&self,  block: u16, addr: u16) -> Result<u8>;
+    fn write_reg(&self, block: u16, addr: u16, val: u8) -> Result<()>;
+    fn i2c_read(&self,  addr: u8, reg: u8, len: usize) -> Result<Vec<u8>>;
     fn i2c_write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()>;
     fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> Result<usize>;
+
+    /// Write to the tuner via I2C with the RTL2832U repeater gate bracketed.
+    fn i2c_write_tuner(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()> {
+        self.write_reg(crate::registers::Block::Demod as u16, crate::registers::demod::P0_IIC_REPEAT, 0x08)?;
+        let result = self.i2c_write(addr, reg, data);
+        self.write_reg(crate::registers::Block::Demod as u16, crate::registers::demod::P0_IIC_REPEAT, 0x00)?;
+        result
+    }
+
+    /// Read from the tuner via I2C with the RTL2832U repeater gate bracketed.
+    fn i2c_read_tuner(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>> {
+        self.write_reg(crate::registers::Block::Demod as u16, crate::registers::demod::P0_IIC_REPEAT, 0x08)?;
+        let result = self.i2c_read(addr, reg, len);
+        self.write_reg(crate::registers::Block::Demod as u16, crate::registers::demod::P0_IIC_REPEAT, 0x00)?;
+        result
+    }
 }
+
+// ============================================================
+// HardwareInterface impl for Device<T>
+// ============================================================
 
 impl<T: UsbContext> HardwareInterface for Device<T> {
-    fn read_reg(&self, block: Block, addr: u16) -> Result<u8> {
-        self.read_reg(block, addr)
+    fn read_reg(&self, block: u16, addr: u16) -> Result<u8> {
+        Device::read_reg(self, block, addr)
     }
-
-    fn write_reg(&self, block: Block, addr: u16, val: u8) -> Result<()> {
-        self.write_reg(block, addr, val)
+    fn write_reg(&self, block: u16, addr: u16, val: u8) -> Result<()> {
+        Device::write_reg(self, block, addr, val)
     }
-
     fn i2c_read(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>> {
-        self.i2c_read(addr, reg, len)
+        Device::i2c_read(self, addr, reg, len)
     }
-
     fn i2c_write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()> {
-        self.i2c_write(addr, reg, data)
+        Device::i2c_write(self, addr, reg, data)
     }
-
     fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> Result<usize> {
-        self.read_bulk(endpoint, buf, timeout)
+        Device::read_bulk(self, endpoint, buf, timeout)
     }
 }
+
+// ============================================================
+// Device register / I2C / bulk methods
+// ============================================================
 
 impl<T: UsbContext> Device<T> {
     pub fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> Result<usize> {
         Ok(self.handle.read_bulk(endpoint, buf, timeout)?)
     }
 
-    pub fn read_reg(&self, block: Block, addr: u16) -> Result<u8> {
+    pub fn read_reg(&self, block: u16, addr: u16) -> Result<u8> {
         let mut buf = [0u8; 1];
-        let block_addr = block as u16;
-        self.handle.read_control(0xc0, Request::RegRead as u8, addr, block_addr, &mut buf, Duration::from_millis(100))?;
+        self.handle.read_control(
+            0xc0,
+            Request::RegRead,
+            addr,
+            block,
+            &mut buf,
+            Duration::from_millis(100),
+        )?;
         Ok(buf[0])
     }
 
-    pub fn write_reg(&self, block: Block, addr: u16, val: u8) -> Result<()> {
-        let block_addr = block as u16;
-        self.handle.write_control(0x40, Request::RegWrite as u8, val as u16, block_addr | addr, &[], Duration::from_millis(100))?;
+    pub fn write_reg(&self, block: u16, addr: u16, val: u8) -> Result<()> {
+        self.handle.write_control(
+            0x40,
+            Request::RegWrite,
+            val as u16,
+            block | addr,
+            &[],
+            Duration::from_millis(100),
+        )?;
         Ok(())
     }
 
     pub fn i2c_read(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len];
-        self.handle.read_control(0xc0, Request::I2cRead as u8, (addr as u16) << 8 | reg as u16, 0, &mut buf, Duration::from_millis(100))?;
+        self.handle.read_control(
+            0xc0,
+            Request::I2cRead,
+            (addr as u16) << 8 | reg as u16,
+            0,
+            &mut buf,
+            Duration::from_millis(100),
+        )?;
         Ok(buf)
     }
 
     pub fn i2c_write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()> {
-        self.handle.write_control(0x40, Request::I2cWrite as u8, (addr as u16) << 8 | reg as u16, 0, data, Duration::from_millis(100))?;
+        self.handle.write_control(
+            0x40,
+            Request::I2cWrite,
+            (addr as u16) << 8 | reg as u16,
+            0,
+            data,
+            Duration::from_millis(100),
+        )?;
         Ok(())
     }
 }
 
+// ============================================================
+// Device::open  (concrete Context only)
+// ============================================================
+
 impl Device<Context> {
+    /// Scan USB buses for an RTL2832U, open it, probe EEPROM strings,
+    /// detach the DVB-T kernel driver, and claim the interface.
+    ///
+    /// Returns `(Device, DeviceInfo)` so the caller has immediate access
+    /// to `info.is_v4` without a separate query.
     pub fn open() -> Result<Self> {
         let context = Context::new()?;
         let devices = context.devices()?;
+
         for device in devices.iter() {
             let descriptor = device.device_descriptor()?;
-            if descriptor.vendor_id() == RTL2832U_VID && descriptor.product_id() == RTL2832U_PID {
-                let handle = device.open()?;
-                
-                #[cfg(target_os = "linux")]
-                {
-                    // Pi 5 / Linux Hacks: reset and detach (fail gracefully)
-                    let _ = handle.reset();
-                    if handle.kernel_driver_active(0).unwrap_or(false) {
-                        let _ = handle.detach_kernel_driver(0);
-                    }
-                }
-
-                handle.claim_interface(0)?;
-                return Ok(Self { handle });
+            if descriptor.vendor_id()  != RTL2832U_VID
+            || descriptor.product_id() != RTL2832U_PID
+            {
+                continue;
             }
+
+            let handle = device.open()?;
+
+            // ── Pi 5 / Linux: force USB reset then detach DVB-T driver ──
+            #[cfg(target_os = "linux")]
+            {
+                // Ignore errors — device may not need reset or driver detach
+                let _ = handle.reset();
+                if handle.kernel_driver_active(0).unwrap_or(false) {
+                    let _ = handle.detach_kernel_driver(0);
+                }
+            }
+
+            // ── Probe EEPROM strings BEFORE claiming the interface ───────
+            // String descriptors are accessible without claiming.
+            let info = DeviceInfo::probe(&handle);
+
+            info!(
+                "Found RTL2832U — manufacturer: {:?}  product: {:?}  is_v4: {}",
+                info.manufacturer, info.product, info.is_v4
+            );
+
+            handle.claim_interface(0)?;
+
+            return Ok(Self { handle, info });
         }
+
         Err(Error::NotFound)
+    }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_v4_detection_positive() {
+        // Simulate exactly the strings the V4 EEPROM carries
+        let manufacturer = V4_MANUFACTURER.to_string();
+        let product      = V4_PRODUCT.to_string();
+        let is_v4 = manufacturer.trim() == V4_MANUFACTURER
+                 && product.trim()      == V4_PRODUCT;
+        assert!(is_v4, "Should detect V4 with correct EEPROM strings");
+    }
+
+    #[test]
+    fn test_v4_detection_negative_v3() {
+        // V3 has a different product string
+        let manufacturer = "RTLSDRBlog".to_string();
+        let product      = "Blog V3".to_string();
+        let is_v4 = manufacturer.trim() == V4_MANUFACTURER
+                 && product.trim()      == V4_PRODUCT;
+        assert!(!is_v4, "V3 should not be detected as V4");
+    }
+
+    #[test]
+    fn test_v4_detection_negative_generic() {
+        // Generic cheap clone with no manufacturer string
+        let manufacturer = "".to_string();
+        let product      = "RTL2838UHIDIR".to_string();
+        let is_v4 = manufacturer.trim() == V4_MANUFACTURER
+                 && product.trim()      == V4_PRODUCT;
+        assert!(!is_v4, "Generic clone should not be detected as V4");
+    }
+
+    #[test]
+    fn test_v4_detection_trims_whitespace() {
+        // Paranoia test — some EEPROM writers pad strings with spaces
+        let manufacturer = "RTLSDRBlog ".to_string();
+        let product      = " Blog V4".to_string();
+        let is_v4 = manufacturer.trim() == V4_MANUFACTURER
+                 && product.trim()      == V4_PRODUCT;
+        assert!(is_v4, "Should detect V4 even with padded EEPROM strings");
     }
 }
