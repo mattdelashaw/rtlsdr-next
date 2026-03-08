@@ -8,6 +8,10 @@ license = "Apache-2.0"
 name = "rtlsdr_next"
 path = "src/lib.rs"
 
+[features]
+default = []
+bench-c = []
+
 [dependencies]
 anyhow = "1.0.102"
 axum = { version = "0.8.1", features = ["ws"] }
@@ -59,3 +63,6 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[build-dependencies]
+cc = "1.2.56"

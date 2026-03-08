@@ -1,18 +1,13 @@
 //! Benchmarks: rtlsdr-next vs librtlsdr baseline
 //!
-//! Compares two conversion strategies on a 256KB block (one real USB transfer):
+//! This benchmark compares the rtlsdr-next Rust implementation against the
+//! literal C code used in the librtlsdr (RTL-SDR Blog V4 fork).
 //!
-//!   1. librtlsdr baseline — precomputed 256-entry lookup table (lut[u8] → f32)
-//!                           This is what every librtlsdr-based app runs today.
+//! Two scenarios are tested:
+//!   1. Standard conversion (U8 -> F32)
+//!   2. V4 HF conversion (U8 -> F32 with spectral inversion Q = -Q)
 //!
-//!   2. rtlsdr-next scalar — direct arithmetic: (u8 as f32 - 127.0) / 128.0
-//!                           No table, no manual SIMD. This is the real performance
-//!                           winner, outperforming the C LUT by ~1.5x on modern
-//!                           hardware by avoiding cache latency and utilizing
-//!                           efficient out-of-order FP pipelines.
-//!
-//! Also benchmarks FIR decimation — librtlsdr has no equivalent (it returns raw samples
-//! and leaves decimation to the caller), so this section shows what you get for free.
+//! The C code is compiled only if the `bench-c` feature is enabled.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rtlsdr_next::converter;
@@ -24,27 +19,16 @@ use rtlsdr_next::dsp::Decimator;
 const BLOCK_SIZE: usize = 256 * 1024; // 256 KB — one USB bulk transfer
 
 // ============================================================
-// librtlsdr baseline: lookup table conversion
-//
-// Sourced from librtlsdr.c rtlsdr_convert_to_float():
-//   static float lut[256];
-//   for (int i = 0; i < 256; i++)
-//       lut[i] = (i - 127.4f) / 128.0f;
+// FFI: Actual C code from the librtlsdr project
 // ============================================================
 
-fn build_lut() -> [f32; 256] {
-    let mut lut = [0.0f32; 256];
-    for i in 0..256 {
-        lut[i] = (i as f32 - 127.4) / 128.0;
-    }
-    lut
-}
+#[cfg(feature = "bench-c")]
+unsafe extern "C" {
+    /// Standard LUT-based conversion from the C library.
+    fn librtlsdr_v4_convert(src: *const u8, dst: *mut f32, len: libc::size_t);
 
-#[inline(never)]
-fn librtlsdr_convert_lut(src: &[u8], dst: &mut [f32], lut: &[f32; 256]) {
-    for (d, &s) in dst.iter_mut().zip(src.iter()) {
-        *d = lut[s as usize];
-    }
+    /// V4 bridge logic: LUT conversion followed by a second pass for inversion.
+    fn librtlsdr_v4_bridge_convert_inverted(src: *const u8, dst: *mut f32, len: libc::size_t);
 }
 
 // ============================================================
@@ -54,20 +38,21 @@ fn librtlsdr_convert_lut(src: &[u8], dst: &mut [f32], lut: &[f32; 256]) {
 fn bench_converter(c: &mut Criterion) {
     let src = vec![127u8; BLOCK_SIZE];
     let mut dst = vec![0.0f32; BLOCK_SIZE];
-    let lut = build_lut();
 
     let mut group = c.benchmark_group("Converter / 256KB block");
     group.throughput(Throughput::Bytes(BLOCK_SIZE as u64));
 
-    // ── 1. librtlsdr lookup table ────────────────────────────────────────
-    group.bench_function("librtlsdr (lut)", |b| {
-        b.iter(|| {
-            librtlsdr_convert_lut(black_box(&src), black_box(&mut dst), &lut);
+    // ── 1. REAL C CODE (librtlsdr LUT) ──────────────────────────────────
+    #[cfg(feature = "bench-c")]
+    group.bench_function("librtlsdr (C LUT)", |b| {
+        b.iter(|| unsafe {
+            librtlsdr_v4_convert(src.as_ptr(), dst.as_mut_ptr(), BLOCK_SIZE);
+            black_box(&dst);
         })
     });
 
-    // ── 2. rtlsdr-next scalar ────────────────────────────────────────────
-    group.bench_function("rtlsdr-next (scalar)", |b| {
+    // ── 2. rtlsdr-next (Rust Scalar) ─────────────────────────────────────
+    group.bench_function("rtlsdr-next (Rust Scalar)", |b| {
         b.iter(|| {
             ScalarConverter.convert(black_box(&src), black_box(&mut dst));
         })
@@ -77,70 +62,38 @@ fn bench_converter(c: &mut Criterion) {
 }
 
 // ============================================================
-// Varying block size — shows where the LUT cache advantage
-// collapses as the input grows beyond L1/L2.
-//
-// Cortex-A76 (Pi 5) cache sizes for reference:
-//   L1 data: 64 KB
-//   L2:      512 KB
-//   L3:      4 MB (shared)
-//
-// The LUT itself is 256 * 4 = 1KB, so it stays hot in L1.
-// The crossover point where arithmetic wins is driven by the
-// input buffer size vs L1/L2 capacity, not the LUT.
+// V4 HF Inversion benchmarks
 // ============================================================
 
-fn bench_converter_sizes(c: &mut Criterion) {
-    let lut = build_lut();
+fn bench_v4_hf_inversion(c: &mut Criterion) {
+    let src = vec![127u8; BLOCK_SIZE];
+    let mut dst = vec![0.0f32; BLOCK_SIZE];
 
-    let sizes: &[usize] = &[
-        4   * 1024,         //   4 KB — fits in L1
-        32  * 1024,         //  32 KB — L1 boundary
-        128 * 1024,         // 128 KB — L2
-        256 * 1024,         // 256 KB — real USB block, L2/L3 boundary
-        1   * 1024 * 1024,  //   1 MB — L3
-        4   * 1024 * 1024,  //   4 MB — beyond L3
-    ];
+    let mut group = c.benchmark_group("Converter / V4 HF HF (Inverted)");
+    group.throughput(Throughput::Bytes(BLOCK_SIZE as u64));
 
-    let mut group = c.benchmark_group("Converter / block size sweep");
+    // ── 1. REAL C CODE BRIDGE (Two-pass: LUT then Sign-flip) ─────────────
+    #[cfg(feature = "bench-c")]
+    group.bench_function("librtlsdr Bridge (C 2-pass)", |b| {
+        b.iter(|| unsafe {
+            librtlsdr_v4_bridge_convert_inverted(src.as_ptr(), dst.as_mut_ptr(), BLOCK_SIZE);
+            black_box(&dst);
+        })
+    });
 
-    for &size in sizes {
-        let src = vec![127u8; size];
-        let mut dst = vec![0.0f32; size];
-        let lut_ref = &lut;
-
-        group.throughput(Throughput::Bytes(size as u64));
-
-        group.bench_with_input(
-            BenchmarkId::new("librtlsdr (lut)", size / 1024),
-            &size,
-            |b, _| b.iter(|| librtlsdr_convert_lut(black_box(&src), black_box(&mut dst), lut_ref)),
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("rtlsdr-next (dispatch)", size / 1024),
-            &size,
-            |b, _| b.iter(|| converter::convert(black_box(&src), black_box(&mut dst))),
-        );
-    }
+    // ── 2. rtlsdr-next (Rust Single-pass) ────────────────────────────────
+    group.bench_function("rtlsdr-next (Rust 1-pass)", |b| {
+        b.iter(|| {
+            ScalarConverter.convert_inverted(black_box(&src), black_box(&mut dst));
+        })
+    });
 
     group.finish();
 }
 
 // ============================================================
-// FIR decimation — no librtlsdr equivalent.
-//
-// A naive "just drop samples" baseline is included to show the
-// cost of aliasing-free decimation vs the wrong approach.
-// Anyone calling librtlsdr today and decimating themselves is
-// probably doing one of these two things.
+// FIR decimation
 // ============================================================
-
-#[inline(never)]
-fn naive_decimate(input: &[f32], factor: usize, output: &mut Vec<f32>) {
-    output.clear();
-    output.extend(input.iter().step_by(factor).copied());
-}
 
 fn bench_decimator(c: &mut Criterion) {
     let input = vec![0.5f32; BLOCK_SIZE];
@@ -150,17 +103,6 @@ fn bench_decimator(c: &mut Criterion) {
 
     for factor in [4usize, 8, 16] {
         let mut dec = Decimator::with_factor(factor);
-        let mut naive_out = Vec::with_capacity(BLOCK_SIZE / factor);
-
-        // Naive drop — no anti-alias filter, produces aliased garbage but
-        // shows the minimum possible cost of any decimation operation.
-        group.bench_with_input(
-            BenchmarkId::new("naive (drop samples)", factor),
-            &factor,
-            |b, &f| b.iter(|| naive_decimate(black_box(&input), f, &mut naive_out)),
-        );
-
-        // Proper windowed-sinc FIR + decimate
         group.bench_with_input(
             BenchmarkId::new("rtlsdr-next FIR", factor),
             &factor,
@@ -173,27 +115,14 @@ fn bench_decimator(c: &mut Criterion) {
 
 // ============================================================
 // End-to-end pipeline: convert + decimate
-//
-// This is the number that matters for a real application.
-// librtlsdr gives you raw u8 and nothing after that —
-// the "librtlsdr pipeline" bench here is just the convert
-// step to show what you're starting from.
 // ============================================================
 
 fn bench_pipeline(c: &mut Criterion) {
     let src_u8      = vec![127u8; BLOCK_SIZE];
     let mut f32_buf = vec![0.0f32; BLOCK_SIZE];
-    let lut         = build_lut();
 
     let mut group = c.benchmark_group("Full pipeline / 256KB block");
     group.throughput(Throughput::Bytes(BLOCK_SIZE as u64));
-
-    // librtlsdr: convert only, no decimation provided by the library
-    group.bench_function("librtlsdr  (lut convert only)", |b| {
-        b.iter(|| {
-            librtlsdr_convert_lut(black_box(&src_u8), black_box(&mut f32_buf), &lut);
-        })
-    });
 
     // rtlsdr-next: full convert + anti-alias FIR + decimate in one pass
     for factor in [4usize, 8, 16] {
@@ -216,7 +145,7 @@ fn bench_pipeline(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_converter,
-    bench_converter_sizes,
+    bench_v4_hf_inversion,
     bench_decimator,
     bench_pipeline,
 );

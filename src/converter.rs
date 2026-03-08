@@ -18,7 +18,13 @@
 /// we avoid the cache latency of table fetches and achieve a ~1.5x throughput
 /// gain while remaining entirely portable.
 pub trait Converter: Send + Sync {
+    /// Convert interleaved u8 samples to interleaved f32 samples.
     fn convert(&self, src: &[u8], dst: &mut [f32]);
+
+    /// Convert interleaved u8 samples to interleaved f32 samples, inverting the
+    /// spectrum (Q = -Q). This is commonly required for the RTL-SDR Blog V4
+    /// when using the HF upconverter.
+    fn convert_inverted(&self, src: &[u8], dst: &mut [f32]);
 }
 
 // ============================================================
@@ -33,6 +39,13 @@ impl Converter for ScalarConverter {
         debug_assert_eq!(src.len(), dst.len(), "src and dst must be same length");
         scalar_convert(src, dst);
     }
+
+    #[inline]
+    fn convert_inverted(&self, src: &[u8], dst: &mut [f32]) {
+        debug_assert_eq!(src.len(), dst.len(), "src and dst must be same length");
+        debug_assert_eq!(src.len() % 2, 0, "src length must be even (I/Q pairs)");
+        scalar_convert_inverted(src, dst);
+    }
 }
 
 #[inline]
@@ -42,8 +55,17 @@ fn scalar_convert(src: &[u8], dst: &mut [f32]) {
     }
 }
 
+#[inline]
+fn scalar_convert_inverted(src: &[u8], dst: &mut [f32]) {
+    // Process in I/Q pairs to handle inversion efficiently in a single pass.
+    for (s, d) in src.chunks_exact(2).zip(dst.chunks_exact_mut(2)) {
+        d[0] = (s[0] as f32 - 127.0) / 128.0; // I
+        d[1] = -(s[1] as f32 - 127.0) / 128.0; // -Q
+    }
+}
+
 // ============================================================
-// Public convenience function
+// Public convenience functions
 // ============================================================
 
 /// Convert RTL-SDR u8 offset-binary samples to f32.
@@ -54,6 +76,14 @@ fn scalar_convert(src: &[u8], dst: &mut [f32]) {
 pub fn convert(src: &[u8], dst: &mut [f32]) {
     debug_assert_eq!(src.len(), dst.len());
     scalar_convert(src, dst);
+}
+
+/// Convert RTL-SDR u8 offset-binary samples to f32 with spectral inversion (Q = -Q).
+#[inline]
+pub fn convert_inverted(src: &[u8], dst: &mut [f32]) {
+    debug_assert_eq!(src.len(), dst.len());
+    debug_assert_eq!(src.len() % 2, 0);
+    scalar_convert_inverted(src, dst);
 }
 
 // ============================================================
@@ -105,13 +135,15 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_function() {
-        let input = vec![127u8, 255, 0, 200, 50, 127, 100, 180];
-        let expected: Vec<f32> = input.iter().map(|&v| (v as f32 - 127.0) / 128.0).collect();
+    fn test_convert_inverted() {
+        let input = vec![127u8, 255, 0, 200];
+        // Standard: [0.0, 1.0, -127.0/128.0, (200.0-127.0)/128.0]
+        // Inverted: [0.0, -1.0, -127.0/128.0, -(200.0-127.0)/128.0]
+        let expected = vec![0.0, -1.0, -127.0 / 128.0, -(200.0 - 127.0) / 128.0];
         let mut output = vec![0.0f32; input.len()];
-        convert(&input, &mut output);
+        convert_inverted(&input, &mut output);
         for (i, (&a, &e)) in output.iter().zip(expected.iter()).enumerate() {
-            assert!((a - e).abs() < EPS, "dispatch[{}]: got {}, expected {}", i, a, e);
+            assert!((a - e).abs() < EPS, "inverted[{}]: got {}, expected {}", i, a, e);
         }
     }
 }

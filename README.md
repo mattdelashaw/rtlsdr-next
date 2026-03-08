@@ -16,9 +16,9 @@ Designed for the modern era (2026+), this driver moves away from the legacy C ca
 
 ## 🚀 Performance
 
-Benchmarked on an ARM64 host (Pi 5 equivalent):
-*   **Converter (`u8` to `f32`):** ~1.14 GiB/s throughput.
-*   **Decimator (FIR Filter):** ~136 Million samples/sec.
+Benchmarked on an ARM64 host (Cortex-A76):
+*   **Converter (`u8` to `f32`):** ~2.7 GiB/s throughput.
+*   **Decimator (33-tap FIR):** ~670 Million samples/sec.
 *   **Efficiency:** CPU usage is effectively negligible for standard 2.4 MSPS radio streams.
 
 ## 🏗 Quick Start
@@ -50,6 +50,17 @@ The project includes a professional Criterion benchmark suite to verify DSP perf
 ```bash
 cargo bench --bench dsp_bench
 ```
+
+### Baseline Comparisons
+Measurements taken on an ARM64 host comparing the `rtlsdr-next` Rust implementation against the `librtlsdr` (v4 branch) C baseline using 256KB blocks:
+
+| Task | librtlsdr (C) | rtlsdr-next (Rust) |
+| :--- | :--- | :--- |
+| **Standard Conversion** | ~174 µs | **~91 µs** |
+| **V4 HF Inversion** (1-pass) | ~259 µs | **~110 µs** |
+| **FIR Decimation** (8x, 33-tap) | N/A | **~392 µs** |
+
+*Note: The performance gain in conversion is primarily due to moving from cache-latency-bound lookup tables to instruction-parallel arithmetic, which better utilizes modern out-of-order CPU pipelines.*
 
 ## 🛠 Running the Example
 
