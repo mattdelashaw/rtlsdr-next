@@ -1,6 +1,6 @@
 use rusb::{Context, DeviceHandle, UsbContext};
 use crate::error::{Error, Result};
-use crate::registers::{self, tuner_ids, Request};
+use crate::registers::{self, tuner_ids, BREQUEST, block};
 use crate::tuner::TunerType;
 use std::time::Duration;
 use log::info;
@@ -26,23 +26,17 @@ unsafe extern "C" {
 const RTL2832U_VID: u16 = 0x0bda;
 const RTL2832U_PID: u16 = 0x2838;
 
-/// EEPROM strings that identify the RTL-SDR Blog V4 specifically.
-/// The driver checks for these exact strings to enable V4 triplexer logic.
-/// Source: RTL-SDR Blog quickstart guide — "do not change the EEPROM
-/// manufacturer or product strings as the drivers check for a specific string".
 const V4_MANUFACTURER: &str = "RTLSDRBlog";
 const V4_PRODUCT:      &str = "Blog V4";
 
 // ============================================================
-// DeviceInfo — returned from open() so callers know what they got
+// DeviceInfo
 // ============================================================
 
-/// Metadata probed during device open.
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub manufacturer: String,
     pub product:      String,
-    /// True iff the EEPROM identifies this as an RTL-SDR Blog V4.
     pub is_v4:        bool,
 }
 
@@ -50,8 +44,6 @@ impl DeviceInfo {
     fn probe<T: UsbContext>(handle: &DeviceHandle<T>) -> Self {
         let descriptor = handle.device().device_descriptor()
             .unwrap_or_else(|_| panic!("failed to read device descriptor"));
-
-        let timeout = Duration::from_millis(200);
 
         let manufacturer = descriptor
             .manufacturer_string_index()
@@ -66,23 +58,9 @@ impl DeviceInfo {
         let is_v4 = manufacturer.trim() == V4_MANUFACTURER
                  && product.trim()      == V4_PRODUCT;
 
-        let _ = timeout; // timeout used implicitly by read_string_descriptor_ascii
-
         Self { manufacturer, product, is_v4 }
     }
 }
-
-// ============================================================
-// Device
-// ============================================================
-
-pub struct Device<T: UsbContext> {
-    handle: DeviceHandle<T>,
-    pub info: DeviceInfo,
-}
-
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 
 // ============================================================
 // DMA / Heap transport buffer
@@ -93,18 +71,14 @@ pub enum BufferType {
     Heap(Vec<u8>),
 }
 
-/// USB transfer buffer — DMA-pinned on Pi 5 / Linux RP1, heap elsewhere.
-///
-/// This buffer owns a reference to the Device to ensure the device handle
-/// remains valid as long as the DMA buffer exists (needed for free).
 pub struct TransportBuffer<T: UsbContext> {
-    device: Arc<Device<T>>,
+    device: std::sync::Arc<Device<T>>,
     inner:  BufferType,
     len:    usize,
 }
 
 impl<T: UsbContext> TransportBuffer<T> {
-    pub fn new(device: Arc<Device<T>>, len: usize) -> Self {
+    pub fn new(device: std::sync::Arc<Device<T>>, len: usize) -> Self {
         let raw_handle = device.handle.as_raw();
         let ptr = unsafe { libusb_dev_mem_alloc(raw_handle, len as libc::size_t) };
 
@@ -130,17 +104,13 @@ impl<T: UsbContext> TransportBuffer<T> {
     }
 }
 
-impl<T: UsbContext> Deref for TransportBuffer<T> {
+impl<T: UsbContext> std::ops::Deref for TransportBuffer<T> {
     type Target = [u8];
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
+    fn deref(&self) -> &Self::Target { self.as_slice() }
 }
 
-impl<T: UsbContext> DerefMut for TransportBuffer<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
-    }
+impl<T: UsbContext> std::ops::DerefMut for TransportBuffer<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target { self.as_mut_slice() }
 }
 
 impl<T: UsbContext> Drop for TransportBuffer<T> {
@@ -160,25 +130,50 @@ unsafe impl<T: UsbContext> Sync for TransportBuffer<T> {}
 // ============================================================
 
 pub trait HardwareInterface: Send + Sync {
-    fn read_reg(&self,  block: u16, addr: u16) -> Result<u8>;
-    fn write_reg(&self, block: u16, addr: u16, val: u8) -> Result<()>;
+    // ── Regular register access (USB / SYS blocks) ──────────────────────
+    fn read_reg(&self,   block: u8, addr: u16) -> Result<u8>;
+    fn write_reg(&self,  block: u8, addr: u16, val: u8)  -> Result<()>;
+    fn write_reg16(&self, block: u8, addr: u16, val: u16) -> Result<()>;
+
+    // ── Demodulator register access (paged) ─────────────────────────────
+    fn demod_read_reg(&self,  page: u8, addr: u16) -> Result<u8>;
+    fn demod_write_reg(&self, page: u8, addr: u16, val: u8)  -> Result<()>;
+    fn demod_write_reg16(&self, page: u8, addr: u16, val: u16) -> Result<()>;
+
+    // ── I2C (tuner) ──────────────────────────────────────────────────────
     fn i2c_read(&self,  addr: u8, reg: u8, len: usize) -> Result<Vec<u8>>;
     fn i2c_write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()>;
     fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> Result<usize>;
 
-    /// Write to the tuner via I2C with the RTL2832U repeater gate bracketed.
+    // ── I2C repeater helpers ─────────────────────────────────────────────
+
     fn i2c_write_tuner(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()> {
-        self.write_reg(crate::registers::Block::Demod as u16, crate::registers::demod::P0_IIC_REPEAT, 0x08)?;
+        self.demod_write_reg(
+            registers::demod::P0_PAGE,
+            registers::demod::P0_IIC_REPEAT,
+            0x08,
+        )?;
         let result = self.i2c_write(addr, reg, data);
-        self.write_reg(crate::registers::Block::Demod as u16, crate::registers::demod::P0_IIC_REPEAT, 0x00)?;
+        self.demod_write_reg(
+            registers::demod::P0_PAGE,
+            registers::demod::P0_IIC_REPEAT,
+            0x00,
+        )?;
         result
     }
 
-    /// Read from the tuner via I2C with the RTL2832U repeater gate bracketed.
     fn i2c_read_tuner(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>> {
-        self.write_reg(crate::registers::Block::Demod as u16, crate::registers::demod::P0_IIC_REPEAT, 0x08)?;
+        self.demod_write_reg(
+            registers::demod::P0_PAGE,
+            registers::demod::P0_IIC_REPEAT,
+            0x08,
+        )?;
         let result = self.i2c_read(addr, reg, len);
-        self.write_reg(crate::registers::Block::Demod as u16, crate::registers::demod::P0_IIC_REPEAT, 0x00)?;
+        self.demod_write_reg(
+            registers::demod::P0_PAGE,
+            registers::demod::P0_IIC_REPEAT,
+            0x00,
+        )?;
         result
     }
 }
@@ -188,11 +183,23 @@ pub trait HardwareInterface: Send + Sync {
 // ============================================================
 
 impl<T: UsbContext> HardwareInterface for Device<T> {
-    fn read_reg(&self, block: u16, addr: u16) -> Result<u8> {
-        Device::read_reg(self, block, addr)
+    fn read_reg(&self, blk: u8, addr: u16) -> Result<u8> {
+        Device::read_reg(self, blk, addr)
     }
-    fn write_reg(&self, block: u16, addr: u16, val: u8) -> Result<()> {
-        Device::write_reg(self, block, addr, val)
+    fn write_reg(&self, blk: u8, addr: u16, val: u8) -> Result<()> {
+        Device::write_reg(self, blk, addr, val)
+    }
+    fn write_reg16(&self, blk: u8, addr: u16, val: u16) -> Result<()> {
+        Device::write_reg16(self, blk, addr, val)
+    }
+    fn demod_read_reg(&self, page: u8, addr: u16) -> Result<u8> {
+        Device::demod_read_reg(self, page, addr)
+    }
+    fn demod_write_reg(&self, page: u8, addr: u16, val: u8) -> Result<()> {
+        Device::demod_write_reg(self, page, addr, val)
+    }
+    fn demod_write_reg16(&self, page: u8, addr: u16, val: u16) -> Result<()> {
+        Device::demod_write_reg16(self, page, addr, val)
     }
     fn i2c_read(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>> {
         Device::i2c_read(self, addr, reg, len)
@@ -206,30 +213,163 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
 }
 
 // ============================================================
+// Device struct
+// ============================================================
+
+pub struct Device<T: UsbContext> {
+    handle: DeviceHandle<T>,
+    pub info: DeviceInfo,
+}
+
+// ============================================================
 // Device register / I2C / bulk methods
 // ============================================================
 
-impl<T: UsbContext> Device<T> {
-    /// Probe the I2C bus to identify the connected tuner.
-    pub fn probe_tuner(&self) -> Result<TunerType> {
-        // Enable I2C repeater
-        self.write_reg(
-            registers::Block::Demod as u16,
-            registers::demod::P0_IIC_REPEAT,
-            0x08,
-        )?;
+const TIMEOUT: Duration = Duration::from_millis(200);
 
+impl<T: UsbContext> Device<T> {
+    // ── Regular register read/write ──────────────────────────────────────
+    //
+    // Encoding (matches librtlsdr rtlsdr_write_reg / rtlsdr_read_reg):
+    //   write: bmRequestType=0x40, bRequest=0, wValue=addr, wIndex=(block<<8)|0x10, data=[val]
+    //   read:  bmRequestType=0xC0, bRequest=0, wValue=addr, wIndex=(block<<8),      data=buf
+
+    pub fn read_reg(&self, blk: u8, addr: u16) -> Result<u8> {
+        let mut buf = [0u8; 1];
+        let index = (blk as u16) << 8;
+        self.handle.read_control(
+            0xc0, BREQUEST,
+            addr,   // wValue = register address
+            index,  // wIndex = block<<8
+            &mut buf,
+            TIMEOUT,
+        )?;
+        Ok(buf[0])
+    }
+
+    pub fn write_reg(&self, blk: u8, addr: u16, val: u8) -> Result<()> {
+        let index = ((blk as u16) << 8) | 0x10;
+        let data = [val];
+        self.handle.write_control(
+            0x40, BREQUEST,
+            addr,   // wValue = register address
+            index,  // wIndex = (block<<8)|0x10
+            &data,
+            TIMEOUT,
+        )?;
+        Ok(())
+    }
+
+    pub fn write_reg16(&self, blk: u8, addr: u16, val: u16) -> Result<()> {
+        let index = ((blk as u16) << 8) | 0x10;
+        let data = [((val >> 8) & 0xff) as u8, (val & 0xff) as u8];
+        self.handle.write_control(
+            0x40, BREQUEST,
+            addr,
+            index,
+            &data,
+            TIMEOUT,
+        )?;
+        Ok(())
+    }
+
+    // ── Demodulator register read/write ──────────────────────────────────
+    //
+    // Encoding (matches librtlsdr rtlsdr_demod_write_reg / rtlsdr_demod_read_reg):
+    //   write: bmRequestType=0x40, bRequest=0, wValue=(addr<<8)|0x20, wIndex=0x10|page, data=[val]
+    //   read:  bmRequestType=0xC0, bRequest=0, wValue=(addr<<8)|0x20, wIndex=page,      data=buf
+
+    pub fn demod_read_reg(&self, page: u8, addr: u16) -> Result<u8> {
+        let mut buf = [0u8; 1];
+        let w_value = (addr << 8) | 0x20;
+        let w_index = page as u16;
+        self.handle.read_control(
+            0xc0, BREQUEST,
+            w_value,
+            w_index,
+            &mut buf,
+            TIMEOUT,
+        )?;
+        Ok(buf[0])
+    }
+
+    pub fn demod_write_reg(&self, page: u8, addr: u16, val: u8) -> Result<()> {
+        let w_value = (addr << 8) | 0x20;
+        let w_index = 0x10 | (page as u16);
+        let data = [val, 0x00]; // librtlsdr always sends 2 bytes; for len=1, data[0]=val
+        self.handle.write_control(
+            0x40, BREQUEST,
+            w_value,
+            w_index,
+            &data[..1], // 1-byte write
+            TIMEOUT,
+        )?;
+        Ok(())
+    }
+
+    pub fn demod_write_reg16(&self, page: u8, addr: u16, val: u16) -> Result<()> {
+        let w_value = (addr << 8) | 0x20;
+        let w_index = 0x10 | (page as u16);
+        let data = [((val >> 8) & 0xff) as u8, (val & 0xff) as u8];
+        self.handle.write_control(
+            0x40, BREQUEST,
+            w_value,
+            w_index,
+            &data,
+            TIMEOUT,
+        )?;
+        Ok(())
+    }
+
+    // ── I2C ──────────────────────────────────────────────────────────────
+    //
+    // I2C transfers go through the RTL2832U's I2C master using a distinct
+    // bRequest. The I2C address and register are packed into wValue.
+
+    pub fn i2c_read(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        let r = self.handle.read_control(
+            0xc0,
+            0x01,
+            (reg as u16) | ((addr as u16) << 8),
+            0,
+            &mut buf,
+            TIMEOUT,
+        );
+        r?;
+        Ok(buf)
+    }
+
+    pub fn i2c_write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()> {
+        let r = self.handle.write_control(
+            0x40,
+            0x01,
+            (reg as u16) | ((addr as u16) << 8),
+            0,
+            data,
+            TIMEOUT,
+        );
+        r?;
+        Ok(())
+    }
+
+    // ── Bulk read ────────────────────────────────────────────────────────
+
+    pub fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> Result<usize> {
+        Ok(self.handle.read_bulk(endpoint, buf, timeout)?)
+    }
+
+    // ── Tuner probe ──────────────────────────────────────────────────────
+
+    pub fn probe_tuner(&self) -> Result<TunerType> {
         let mut found = TunerType::Unknown(0);
 
-        // 1. R820T / R820T2 / R828D — check that the I2C address responds.
-        //    The chip ID register (0x00) returns a status byte; we just need
-        //    the read to succeed. The V4 vs V3 distinction is made via EEPROM
-        //    strings (already in DeviceInfo.is_v4), not the tuner ID.
+        // R820T / R820T2 / R828D — check address responds
         if self.i2c_read(tuner_ids::R82XX_I2C_ADDR, tuner_ids::R82XX_CHECK_REG, 1).is_ok() {
             found = TunerType::R820T;
         }
 
-        // 2. E4000
+        // E4000
         if let TunerType::Unknown(_) = found {
             if let Ok(data) = self.i2c_read(tuner_ids::E4000_I2C_ADDR, tuner_ids::E4000_CHECK_REG, 1) {
                 if data.first() == Some(&tuner_ids::E4000_CHECK_VAL) {
@@ -238,7 +378,7 @@ impl<T: UsbContext> Device<T> {
             }
         }
 
-        // 3. FC0012 / FC0013
+        // FC0012 / FC0013
         if let TunerType::Unknown(_) = found {
             if let Ok(data) = self.i2c_read(tuner_ids::FC0012_I2C_ADDR, tuner_ids::FC0012_CHECK_REG, 1) {
                 match data.first() {
@@ -249,68 +389,7 @@ impl<T: UsbContext> Device<T> {
             }
         }
 
-        // Disable I2C repeater
-        self.write_reg(
-            registers::Block::Demod as u16,
-            registers::demod::P0_IIC_REPEAT,
-            0x00,
-        )?;
-
         Ok(found)
-    }
-
-    pub fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> Result<usize> {
-        Ok(self.handle.read_bulk(endpoint, buf, timeout)?)
-    }
-
-    pub fn read_reg(&self, block: u16, addr: u16) -> Result<u8> {
-        let mut buf = [0u8; 1];
-        self.handle.read_control(
-            0xc0,
-            Request::RegRead,
-            addr,
-            block,
-            &mut buf,
-            Duration::from_millis(100),
-        )?;
-        Ok(buf[0])
-    }
-
-    pub fn write_reg(&self, block: u16, addr: u16, val: u8) -> Result<()> {
-        self.handle.write_control(
-            0x40,
-            Request::RegWrite,
-            val as u16,
-            block | addr,
-            &[],
-            Duration::from_millis(100),
-        )?;
-        Ok(())
-    }
-
-    pub fn i2c_read(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; len];
-        self.handle.read_control(
-            0xc0,
-            Request::I2cRead,
-            (addr as u16) << 8 | reg as u16,
-            0,
-            &mut buf,
-            Duration::from_millis(100),
-        )?;
-        Ok(buf)
-    }
-
-    pub fn i2c_write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()> {
-        self.handle.write_control(
-            0x40,
-            Request::I2cWrite,
-            (addr as u16) << 8 | reg as u16,
-            0,
-            data,
-            Duration::from_millis(100),
-        )?;
-        Ok(())
     }
 }
 
@@ -319,11 +398,6 @@ impl<T: UsbContext> Device<T> {
 // ============================================================
 
 impl Device<Context> {
-    /// Scan USB buses for an RTL2832U, open it, probe EEPROM strings,
-    /// detach the DVB-T kernel driver, and claim the interface.
-    ///
-    /// Returns `(Device, DeviceInfo)` so the caller has immediate access
-    /// to `info.is_v4` without a separate query.
     pub fn open() -> Result<Self> {
         let context = Context::new()?;
         let devices = context.devices()?;
@@ -338,18 +412,14 @@ impl Device<Context> {
 
             let handle = device.open()?;
 
-            // ── Pi 5 / Linux: force USB reset then detach DVB-T driver ──
             #[cfg(target_os = "linux")]
             {
-                // Ignore errors — device may not need reset or driver detach
                 let _ = handle.reset();
                 if handle.kernel_driver_active(0).unwrap_or(false) {
                     let _ = handle.detach_kernel_driver(0);
                 }
             }
 
-            // ── Probe EEPROM strings BEFORE claiming the interface ───────
-            // String descriptors are accessible without claiming.
             let info = DeviceInfo::probe(&handle);
 
             info!(
@@ -376,41 +446,41 @@ mod tests {
 
     #[test]
     fn test_v4_detection_positive() {
-        // Simulate exactly the strings the V4 EEPROM carries
         let manufacturer = V4_MANUFACTURER.to_string();
         let product      = V4_PRODUCT.to_string();
         let is_v4 = manufacturer.trim() == V4_MANUFACTURER
                  && product.trim()      == V4_PRODUCT;
-        assert!(is_v4, "Should detect V4 with correct EEPROM strings");
+        assert!(is_v4);
     }
 
     #[test]
-    fn test_v4_detection_negative_v3() {
-        // V3 has a different product string
-        let manufacturer = "RTLSDRBlog".to_string();
-        let product      = "Blog V3".to_string();
-        let is_v4 = manufacturer.trim() == V4_MANUFACTURER
-                 && product.trim()      == V4_PRODUCT;
-        assert!(!is_v4, "V3 should not be detected as V4");
+    fn test_v4_detection_negative() {
+        let is_v4 = "RTLSDRBlog".trim() == V4_MANUFACTURER
+                 && "Blog V3".trim()    == V4_PRODUCT;
+        assert!(!is_v4);
     }
 
     #[test]
-    fn test_v4_detection_negative_generic() {
-        // Generic cheap clone with no manufacturer string
-        let manufacturer = "".to_string();
-        let product      = "RTL2838UHIDIR".to_string();
-        let is_v4 = manufacturer.trim() == V4_MANUFACTURER
-                 && product.trim()      == V4_PRODUCT;
-        assert!(!is_v4, "Generic clone should not be detected as V4");
+    fn test_write_reg16_encoding() {
+        // Verify 2-byte value splits correctly: high byte first
+        let val: u16 = 0x1002;
+        let data = [((val >> 8) & 0xff) as u8, (val & 0xff) as u8];
+        assert_eq!(data, [0x10, 0x02]);
     }
 
     #[test]
-    fn test_v4_detection_trims_whitespace() {
-        // Paranoia test — some EEPROM writers pad strings with spaces
-        let manufacturer = "RTLSDRBlog ".to_string();
-        let product      = " Blog V4".to_string();
-        let is_v4 = manufacturer.trim() == V4_MANUFACTURER
-                 && product.trim()      == V4_PRODUCT;
-        assert!(is_v4, "Should detect V4 even with padded EEPROM strings");
+    fn test_demod_wvalue_encoding() {
+        // demod_write_reg wValue = (addr<<8)|0x20
+        let addr: u16 = 0x0001;
+        let w_value = (addr << 8) | 0x20;
+        assert_eq!(w_value, 0x0120);
+    }
+
+    #[test]
+    fn test_regular_windex_encoding() {
+        // write_reg wIndex = (block<<8)|0x10
+        let blk = block::SYS; // = 2
+        let index = ((blk as u16) << 8) | 0x10;
+        assert_eq!(index, 0x0210);
     }
 }

@@ -470,25 +470,29 @@ mod tests {
     use std::time::Duration;
 
     struct MockHardware {
-        writes:     Mutex<Vec<(u8, u8, Vec<u8>)>>,
-        reg_writes: Mutex<Vec<(u16, u16, u8)>>,
+        writes:       Mutex<Vec<(u8, u8, Vec<u8>)>>,
+        demod_writes: Mutex<Vec<(u8, u16, u8)>>,  // (page, addr, val)
     }
 
     impl MockHardware {
         fn new() -> Self {
             Self {
-                writes:     Mutex::new(vec![]),
-                reg_writes: Mutex::new(vec![]),
+                writes:       Mutex::new(vec![]),
+                demod_writes: Mutex::new(vec![]),
             }
         }
     }
 
     impl HardwareInterface for MockHardware {
-        fn read_reg(&self, _: u16, _: u16) -> Result<u8> { Ok(0) }
-        fn write_reg(&self, block: u16, addr: u16, val: u8) -> Result<()> {
-            self.reg_writes.lock().unwrap().push((block, addr, val));
+        fn read_reg(&self, _: u8, _: u16) -> Result<u8> { Ok(0) }
+        fn write_reg(&self, _: u8, _: u16, _: u8) -> Result<()> { Ok(()) }
+        fn write_reg16(&self, _: u8, _: u16, _: u16) -> Result<()> { Ok(()) }
+        fn demod_read_reg(&self, _: u8, _: u16) -> Result<u8> { Ok(0) }
+        fn demod_write_reg(&self, page: u8, addr: u16, val: u8) -> Result<()> {
+            self.demod_writes.lock().unwrap().push((page, addr, val));
             Ok(())
         }
+        fn demod_write_reg16(&self, _: u8, _: u16, _: u16) -> Result<()> { Ok(()) }
         fn i2c_read(&self, _: u8, _: u8, len: usize) -> Result<Vec<u8>> {
             let mut data = vec![0u8; len];
             if len >= 5 { data[4] = 0x20; }
@@ -509,32 +513,25 @@ mod tests {
 
     #[test]
     fn test_i2c_repeater_bracketed() {
-        // Every tuner I2C write must be bracketed by repeater ON (0x08) / OFF (0x00)
-        // via demod page 0 register 0x08.
         let (tuner, mock) = make_tuner(false);
-        mock.reg_writes.lock().unwrap().clear();
+        mock.demod_writes.lock().unwrap().clear();
 
         tuner.initialize().unwrap();
 
-        let reg_writes = mock.reg_writes.lock().unwrap();
-        use crate::registers::demod::P0_IIC_REPEAT;
-        let repeater_block = crate::registers::Block::Demod as u16;
-        let repeater_writes: Vec<u8> = reg_writes
+        let dw = mock.demod_writes.lock().unwrap();
+        use crate::registers::demod::{P0_PAGE, P0_IIC_REPEAT};
+        let repeater_writes: Vec<u8> = dw
             .iter()
-            .filter(|(b, addr, _)| *b == repeater_block && *addr == P0_IIC_REPEAT)
+            .filter(|(p, addr, _)| *p == P0_PAGE && *addr == P0_IIC_REPEAT)
             .map(|(_, _, val)| *val)
             .collect();
 
-        // Must have at least one ON/OFF pair
         assert!(!repeater_writes.is_empty(), "No repeater writes found");
-        // First write must be ON (0x08)
         assert_eq!(repeater_writes[0], 0x08, "First repeater write should be ON");
-        // Last write must be OFF (0x00)
         assert_eq!(
             *repeater_writes.last().unwrap(), 0x00,
             "Last repeater write should be OFF"
         );
-        // Every ON must be followed by an OFF — no dangling enables
         let mut i = 0;
         while i < repeater_writes.len() {
             assert_eq!(repeater_writes[i], 0x08, "Expected ON at index {}", i);

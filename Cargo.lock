@@ -987,6 +987,7 @@ dependencies = [
  "anyhow",
  "axum",
  "byteorder",
+ "cc",
  "criterion",
  "env_logger",
  "futures-util",

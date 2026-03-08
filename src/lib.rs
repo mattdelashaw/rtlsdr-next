@@ -18,12 +18,6 @@ pub use error::{Error, Result};
 pub use tuner::{Tuner, FilterRange};
 pub use stream::{SampleStream, F32Stream, PooledBuffer};
 pub use server::SharingServer;
-
-/// Concrete stream types — use these when you need to name the stream type
-/// in a struct or function signature. The generic `SampleStream<T>` and
-/// `F32Stream<T>` are usable too, but require importing `rusb::Context`.
-pub type RawSampleStream = stream::SampleStream<rusb::Context>;
-pub type RawF32Stream    = stream::F32Stream<rusb::Context>;
 pub use rtl_tcp::TcpServer;
 pub use demod::DEFAULT_SAMPLE_RATE;
 
@@ -101,8 +95,8 @@ impl Driver {
         tuner.initialize()?;
 
         // ── Steps 5–8: demodulator sync ───────────────────────────────────
-        demod::set_if_freq(hw, registers::IF_FREQ_HZ as u32, 28_800_000)?;
-        demod::set_sample_rate(hw, DEFAULT_SAMPLE_RATE, 28_800_000)?;
+        demod::set_if_freq_xtal(hw, registers::IF_FREQ_HZ as u32, 28_800_000)?;
+        demod::set_sample_rate_xtal(hw, DEFAULT_SAMPLE_RATE, 28_800_000)?;
         demod::reset_demod(hw)?;
         demod::start_streaming(hw)?;
 
@@ -122,7 +116,7 @@ impl Driver {
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
 
-        demod::set_if_freq(hw, registers::IF_FREQ_HZ as u32, xtal)?;
+        demod::set_if_freq_xtal(hw, registers::IF_FREQ_HZ as u32, xtal)?;
         demod::reset_demod(hw)?;
         self.frequency = hz;
         Ok(actual)
@@ -133,7 +127,7 @@ impl Driver {
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
 
-        demod::set_sample_rate(hw, rate_hz, xtal)?;
+        demod::set_sample_rate_xtal(hw, rate_hz, xtal)?;
         demod::reset_demod(hw)?;
         self.sample_rate = rate_hz;
         Ok(())
