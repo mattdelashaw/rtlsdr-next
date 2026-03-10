@@ -9,7 +9,7 @@ use log::{warn, debug};
 // Constants
 // ============================================================
 
-const I2C_ADDR: u8 = 0x34;
+const I2C_ADDR: u8 = 0x74;
 const NUM_REGS: usize = 27; // Shadow regs 0x05..=0x1f
 const REG_SHADOW_START: u8 = 0x05;
 
@@ -341,8 +341,9 @@ impl R828D {
 
 impl Tuner for R828D {
     fn initialize(&self) -> Result<()> {
-        // Write full init array starting at register 0x05
-        self.device.i2c_write_tuner(I2C_ADDR, REG_SHADOW_START, &INIT_ARRAY)?;
+        let mid = 16;
+        self.device.i2c_write_tuner(I2C_ADDR, REG_SHADOW_START, &INIT_ARRAY[..mid])?;
+        self.device.i2c_write_tuner(I2C_ADDR, REG_SHADOW_START + mid as u8, &INIT_ARRAY[mid..])?;
 
         // Set PLL autotune to 128 kHz
         self.write_reg_mask(0x1a, 0x00, 0x0c)?;
@@ -484,25 +485,29 @@ mod tests {
     }
 
     impl HardwareInterface for MockHardware {
-        fn read_reg(&self, _: u8, _: u16) -> Result<u8> { Ok(0) }
-        fn write_reg(&self, _: u8, _: u16, _: u8) -> Result<()> { Ok(()) }
-        fn write_reg16(&self, _: u8, _: u16, _: u16) -> Result<()> { Ok(()) }
+        fn read_reg(&self, _: u16, _: u16) -> Result<u8> { Ok(0) }
+        fn write_reg(&self, _: u16, _: u16, _: u8) -> Result<()> { Ok(()) }
+        fn write_reg16(&self, _: u16, _: u16, _: u16) -> Result<()> { Ok(()) }
         fn demod_read_reg(&self, _: u8, _: u16) -> Result<u8> { Ok(0) }
         fn demod_write_reg(&self, page: u8, addr: u16, val: u8) -> Result<()> {
             self.demod_writes.lock().unwrap().push((page, addr, val));
             Ok(())
         }
         fn demod_write_reg16(&self, _: u8, _: u16, _: u16) -> Result<()> { Ok(()) }
-        fn i2c_read(&self, _: u8, _: u8, len: usize) -> Result<Vec<u8>> {
+        fn i2c_write_tuner(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()> {
+            self.writes.lock().unwrap().push((addr, reg, data.to_vec()));
+            Ok(())
+        }
+        fn i2c_read_tuner(&self, _: u8, _: u8, len: usize) -> Result<Vec<u8>> {
             let mut data = vec![0u8; len];
             if len >= 5 { data[4] = 0x20; }
             Ok(data)
         }
-        fn i2c_write(&self, addr: u8, reg: u8, data: &[u8]) -> Result<()> {
-            self.writes.lock().unwrap().push((addr, reg, data.to_vec()));
-            Ok(())
-        }
+        fn i2c_read_raw(&self, _: u8, len: usize) -> Result<Vec<u8>> { Ok(vec![0; len]) }
         fn read_bulk(&self, _: u8, _: &mut [u8], _: Duration) -> Result<usize> { Ok(0) }
+        fn set_gpio_output(&self, _: u8) -> Result<()> { Ok(()) }
+        fn set_gpio_bit(&self, _: u8, _: bool) -> Result<()> { Ok(()) }
+        fn probe_tuner(&self) -> Result<crate::tuner::TunerType> { Ok(crate::tuner::TunerType::Unknown(0)) }
     }
 
     fn make_tuner(is_v4: bool) -> (R828D, Arc<MockHardware>) {
@@ -519,24 +524,23 @@ mod tests {
         tuner.initialize().unwrap();
 
         let dw = mock.demod_writes.lock().unwrap();
-        use crate::registers::demod::{P0_PAGE, P0_IIC_REPEAT};
+        use crate::registers::demod::{P1_PAGE, P1_IIC_REPEAT, P1_IIC_REPEAT_ON, P1_IIC_REPEAT_OFF};
         let repeater_writes: Vec<u8> = dw
             .iter()
-            .filter(|(p, addr, _)| *p == P0_PAGE && *addr == P0_IIC_REPEAT)
+            .filter(|(p, addr, _)| *p == P1_PAGE && *addr == P1_IIC_REPEAT)
             .map(|(_, _, val)| *val)
             .collect();
 
         assert!(!repeater_writes.is_empty(), "No repeater writes found");
-        assert_eq!(repeater_writes[0], 0x08, "First repeater write should be ON");
+        assert_eq!(repeater_writes[0], P1_IIC_REPEAT_ON, "First repeater write should be ON");
         assert_eq!(
-            *repeater_writes.last().unwrap(), 0x00,
+            *repeater_writes.last().unwrap(), P1_IIC_REPEAT_OFF,
             "Last repeater write should be OFF"
         );
         let mut i = 0;
         while i < repeater_writes.len() {
-            assert_eq!(repeater_writes[i], 0x08, "Expected ON at index {}", i);
-            assert!(i + 1 < repeater_writes.len(), "Dangling repeater ON at index {}", i);
-            assert_eq!(repeater_writes[i + 1], 0x00, "Expected OFF at index {}", i + 1);
+            assert_eq!(repeater_writes[i], P1_IIC_REPEAT_ON, "Expected ON at index {}", i);
+            assert_eq!(repeater_writes[i+1], P1_IIC_REPEAT_OFF, "Expected OFF at index {}", i+1);
             i += 2;
         }
     }
@@ -546,10 +550,14 @@ mod tests {
         let (tuner, mock) = make_tuner(true);
         tuner.initialize().unwrap();
         let writes = mock.writes.lock().unwrap();
-        // First write should be the full init array at reg 0x05
+        // The write is split into two chunks (16 + 11 bytes)
         let first = &writes[0];
+        let second = &writes[1];
         assert_eq!(first.1, 0x05);
-        assert_eq!(first.2, INIT_ARRAY.to_vec());
+        assert_eq!(second.1, 0x05 + 16);
+        let mut combined = first.2.clone();
+        combined.extend_from_slice(&second.2);
+        assert_eq!(combined, INIT_ARRAY.to_vec());
     }
 
     #[test]

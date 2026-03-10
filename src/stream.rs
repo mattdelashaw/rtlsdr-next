@@ -1,4 +1,5 @@
-use crate::device::{Device, TransportBuffer};
+use crate::device::{Device, TransportBuffer, HardwareInterface};
+use crate::error::{Error, Result};
 use rusb::UsbContext;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -45,8 +46,8 @@ impl<B> Drop for PooledBuffer<B> {
 
 /// A stream of raw interleaved U8 samples (I, Q, I, Q...).
 pub struct SampleStream<T: UsbContext + 'static> {
-    receiver: mpsc::Receiver<Result<PooledBuffer<TransportBuffer<T>>, crate::Error>>,
-    cancel_token: CancellationToken,
+    receiver: mpsc::Receiver<crate::Result<PooledBuffer<TransportBuffer<T>>>>,
+    pub(crate) cancel_token: CancellationToken,
 }
 
 impl<T: UsbContext + 'static> SampleStream<T> {
@@ -106,7 +107,7 @@ impl<T: UsbContext + 'static> SampleStream<T> {
         Self { receiver: rx, cancel_token }
     }
 
-    pub async fn next(&mut self) -> Option<Result<PooledBuffer<TransportBuffer<T>>, crate::Error>> {
+    pub async fn next(&mut self) -> Option<crate::Result<PooledBuffer<TransportBuffer<T>>>> {
         self.receiver.recv().await
     }
 
@@ -114,7 +115,7 @@ impl<T: UsbContext + 'static> SampleStream<T> {
 }
 
 impl<T: UsbContext> Drop for SampleStream<T> {
-    fn drop(&mut self) { self.close(); }
+    fn drop(&mut self) { self.cancel_token.cancel(); }
 }
 
 /// A high-level DSP stream that produces interleaved F32 samples.
@@ -171,7 +172,7 @@ impl<T: UsbContext + 'static> F32Stream<T> {
         self
     }
 
-    pub async fn next(&mut self) -> Option<Result<PooledBuffer<Vec<f32>>, crate::Error>> {
+    pub async fn next(&mut self) -> Option<crate::Result<PooledBuffer<Vec<f32>>>> {
         // raw_res is PooledBuffer<TransportBuffer<T>>
         let raw_res = self.raw_stream.next().await?;
         let u8_data_buffer = match raw_res {
@@ -208,10 +209,6 @@ impl<T: UsbContext + 'static> F32Stream<T> {
 
 impl<T: UsbContext + 'static> Drop for F32Stream<T> {
     fn drop(&mut self) {
-        // Explicitly cancel the underlying SampleStream rather than relying
-        // on field drop order. This makes shutdown intent unambiguous and
-        // ensures the USB thread sees the cancellation signal immediately,
-        // before any pool channels are dropped.
-        self.close();
+        self.raw_stream.cancel_token.cancel();
     }
 }

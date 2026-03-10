@@ -159,8 +159,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
 async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut stream = {
         let d = state.driver.lock().await;
-        d.stream_f32(8) // Decimate by 8 for 256kSPS
-            .with_dc_removal(0.01)
+        let stream: crate::stream::F32Stream<rusb::Context> = d.stream_f32(8);
+        stream.with_dc_removal(0.01)
             .with_agc(1.0, 0.01, 0.01)
     };
 

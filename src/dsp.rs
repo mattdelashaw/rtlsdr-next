@@ -229,26 +229,28 @@ unsafe fn fir_decimate_neon(
 
     let mut i = *phase;
     while i < input_len {
-        let win_ptr  = extended.as_ptr().add(i);
+        let win_ptr  = unsafe { extended.as_ptr().add(i) };
         let taps_ptr = taps.as_ptr();
 
-        let mut v_acc = vdupq_n_f32(0.0);
+        let mut v_acc = unsafe { vdupq_n_f32(0.0) };
         let mut j     = 0usize;
 
         // ── 4-wide FMA loop ──────────────────────────────────────────────
         while j < taps_simd {
-            let v_s = vld1q_f32(win_ptr.add(j));
-            let v_t = vld1q_f32(taps_ptr.add(j));
-            v_acc   = vmlaq_f32(v_acc, v_s, v_t);
+            unsafe {
+                let v_s = vld1q_f32(win_ptr.add(j));
+                let v_t = vld1q_f32(taps_ptr.add(j));
+                v_acc   = vmlaq_f32(v_acc, v_s, v_t);
+            }
             j      += 4;
         }
 
         // ── Horizontal sum of 4 lanes ────────────────────────────────────
-        let mut acc = vaddvq_f32(v_acc);
+        let mut acc = unsafe { vaddvq_f32(v_acc) };
 
         // ── Scalar tail (0..3 remaining taps) ───────────────────────────
         while j < taps_len {
-            acc += *extended.get_unchecked(i + j) * *taps.get_unchecked(j);
+            acc += unsafe { *extended.get_unchecked(i + j) * *taps.get_unchecked(j) };
             j   += 1;
         }
 

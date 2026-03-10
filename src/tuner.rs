@@ -2,7 +2,8 @@ use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TunerType {
-    R820T, // Covers R820T2 and R828D (functionally similar for detection)
+    R820T,
+    R828D,
     E4000,
     FC0012,
     FC0013,
