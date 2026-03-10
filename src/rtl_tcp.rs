@@ -30,7 +30,7 @@ impl TcpServer {
         let cancel_accept = cancel_token.clone();
 
         // Create a broadcast channel for raw samples
-        let (tx, _) = broadcast::channel::<Arc<Vec<u8>>>(32);
+        let (tx, _) = broadcast::channel::<Arc<Vec<u8>>>(128);
         let tx_clone = tx.clone();
 
         // Task 1: Sample Relay
@@ -121,8 +121,19 @@ async fn handle_client(
             match cmd {
                 0x01 => { let _ = d.set_frequency(arg as u64); }
                 0x02 => { let _ = d.set_sample_rate(arg); }
+                // 0x03: set gain mode — 0=auto(AGC), 1=manual
+                // When auto, set a reasonable default gain; manual gain comes via 0x04
+                0x03 => {
+                    if arg == 0 {
+                        let _ = d.tuner.set_gain(30.0); // auto: use mid gain
+                    }
+                }
                 0x04 => { let _ = d.tuner.set_gain(arg as f32 / 10.0); }
                 0x05 => { let _ = d.set_ppm(arg as i32); }
+                // 0x08: set RTL AGC mode (demod AGC) — ignore for now
+                // 0x09: set direct sampling — ignore (V4 handles this internally)
+                // 0x0a: set offset tuning — ignore
+                0x08 | 0x09 | 0x0a => {}
                 0x0e => { let _ = d.tuner.set_bias_t(arg != 0); }
                 _ => { warn!("Unsupported rtl_tcp command: 0x{:02x}", cmd); }
             }
