@@ -147,6 +147,15 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
             &data,
             TIMEOUT,
         )?;
+        // Dummy read after every demod write — matches librtlsdr rtlsdr_demod_write_reg()
+        let mut _buf = [0u8; 1];
+        let _ = self.handle.read_control(
+            0xc0, BREQUEST,
+            (0x01u16 << 8) | 0x20,
+            (block::DEMOD << 8) | 0x0a,
+            &mut _buf,
+            TIMEOUT,
+        );
         Ok(())
     }
 

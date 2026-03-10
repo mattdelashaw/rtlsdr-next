@@ -139,12 +139,17 @@ pub fn set_if_freq(hw: &dyn HardwareInterface) -> Result<()> {
 }
 
 /// Program the IF frequency registers with explicit (PPM-corrected) xtal.
+/// Matches librtlsdr rtlsdr_set_if_freq():
+///   if_freq = ((freq * 2^22) / xtal) * -1   <-- negated!
+///   write page1 reg 0x19 = (if_freq >> 16) & 0x3f
+///   write page1 reg 0x1a = (if_freq >> 8)  & 0xff
+///   write page1 reg 0x1b =  if_freq        & 0xff
 pub fn set_if_freq_xtal(hw: &dyn HardwareInterface, if_hz: u32, xtal_hz: u32) -> Result<()> {
-    let regs = if_freq_regs(if_hz, xtal_hz);
-    hw.demod_write_reg(demod::P1_PAGE, demod::P1_IF_FREQ_H, regs[0])?;
-    hw.demod_write_reg(demod::P1_PAGE, demod::P1_IF_FREQ_M, regs[1])?;
-    hw.demod_write_reg(demod::P1_PAGE, demod::P1_IF_FREQ_L, regs[2])?;
-    debug!("IF freq {}Hz (xtal {}Hz)", if_hz, xtal_hz);
+    let if_freq = -((if_hz as i64 * (1i64 << 22)) / xtal_hz as i64) as i32;
+    hw.demod_write_reg(demod::P1_PAGE, 0x19, ((if_freq >> 16) & 0x3f) as u8)?;
+    hw.demod_write_reg(demod::P1_PAGE, 0x1a, ((if_freq >> 8)  & 0xff) as u8)?;
+    hw.demod_write_reg(demod::P1_PAGE, 0x1b, ( if_freq        & 0xff) as u8)?;
+    debug!("IF freq {}Hz (xtal {}Hz) if_freq_reg={}", if_hz, xtal_hz, if_freq);
     Ok(())
 }
 
@@ -154,13 +159,16 @@ pub fn set_sample_rate(hw: &dyn HardwareInterface, rate_hz: u32) -> Result<()> {
 }
 
 /// Program the resampler with explicit (PPM-corrected) xtal.
+/// Matches librtlsdr rtlsdr_set_sample_rate() exactly:
+///   rsamp_ratio = (xtal * 2^22) / rate
+///   rsamp_ratio &= 0x0ffffffc
+///   write page1 reg 0x9f = rsamp_ratio >> 16  (2 bytes)
+///   write page1 reg 0xa1 = rsamp_ratio & 0xffff (2 bytes)
 pub fn set_sample_rate_xtal(hw: &dyn HardwareInterface, rate_hz: u32, xtal_hz: u32) -> Result<()> {
-    let regs = resample_regs(rate_hz, xtal_hz);
-    hw.demod_write_reg(demod::P2_PAGE, demod::P2_RESAMPLE_H,   regs[0])?;
-    hw.demod_write_reg(demod::P2_PAGE, demod::P2_RESAMPLE_M,   regs[1])?;
-    hw.demod_write_reg(demod::P2_PAGE, demod::P2_RESAMPLE_L,   regs[2])?;
-    hw.demod_write_reg(demod::P2_PAGE, demod::P2_RESAMPLE_LSB, regs[3])?;
-    debug!("Sample rate {}Hz (xtal {}Hz)", rate_hz, xtal_hz);
+    let rsamp_ratio = ((xtal_hz as u64) * (1u64 << 22) / rate_hz as u64) as u32 & 0x0ffffffc;
+    hw.demod_write_reg16(demod::P1_PAGE, 0x9f, (rsamp_ratio >> 16) as u16)?;
+    hw.demod_write_reg16(demod::P1_PAGE, 0xa1, (rsamp_ratio & 0xffff) as u16)?;
+    debug!("Sample rate {}Hz (xtal {}Hz) rsamp_ratio=0x{:08x}", rate_hz, xtal_hz, rsamp_ratio);
     Ok(())
 }
 
