@@ -2,7 +2,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 use std::sync::Arc;
-use log::{info, error, warn};
+use log::{info, error, warn, trace};
 use byteorder::{BigEndian, ByteOrder};
 use tokio_util::sync::CancellationToken;
 
@@ -118,8 +118,9 @@ async fn handle_client(
             let arg = BigEndian::read_u32(&buf[1..5]);
 
             let mut d = cmd_driver.lock().await;
+            trace!("Received command: {:?}, arg: {:?}", cmd, arg);
             match cmd {
-                0x01 => { let _ = d.set_frequency(arg as u64); }
+                0x01 => { let r = d.set_frequency(arg as u64); trace!("set_frequency({}) = {:?}", arg, r); }
                 0x02 => { let _ = d.set_sample_rate(arg); }
                 // 0x03: set gain mode — 0=auto(AGC), 1=manual
                 // When auto, set a reasonable default gain; manual gain comes via 0x04

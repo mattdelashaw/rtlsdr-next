@@ -20,7 +20,7 @@ use rusb::{Context, DeviceHandle, UsbContext};
 use log::debug;
 
 use crate::error::{Error, Result};
-use crate::registers::{self, BREQUEST, block, tuner_ids};
+use crate::registers::{self, BREQUEST, block};
 use crate::tuner::TunerType;
 
 const TIMEOUT: Duration = Duration::from_millis(200);
@@ -124,6 +124,17 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
             &[val],
             TIMEOUT,
         )?;
+        // Dummy read after every demod write — matches librtlsdr rtlsdr_demod_write_reg()
+        // which always calls rtlsdr_demod_read_reg(dev, 0x0a, 0x01, 1) as a flush/sync.
+        // Without this, subsequent control transfers can stall (Pipe error).
+        let mut _buf = [0u8; 1];
+        let _ = self.handle.read_control(
+            0xc0, BREQUEST,
+            (0x01u16 << 8) | 0x20,
+            (block::DEMOD << 8) | 0x0a,
+            &mut _buf,
+            TIMEOUT,
+        );
         Ok(())
     }
 
@@ -284,24 +295,18 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
 
         let mut found = TunerType::Unknown(0);
 
-	// R820T at 0x34
-	if self.i2c_read_raw(tuner_ids::R82XX_I2C_ADDR, 1).is_ok() {
-	    found = TunerType::R820T;
-	}
-
-	// R828D at 0x74 (V4 and some other dongles)
-	if self.i2c_read_raw(tuner_ids::R828D_I2C_ADDR, 1).is_ok() {
-	    found = TunerType::R828D;
-	}
+        if self.i2c_read_raw(registers::tuner_ids::R82XX_I2C_ADDR, 1).is_ok() {
+            found = TunerType::R820T;
+        }
 
         if let TunerType::Unknown(_) = found {
-            if self.i2c_read_raw(tuner_ids::E4000_I2C_ADDR, 1).is_ok() {
+            if self.i2c_read_raw(registers::tuner_ids::E4000_I2C_ADDR, 1).is_ok() {
                 found = TunerType::E4000;
             }
         }
 
         if let TunerType::Unknown(_) = found {
-            if self.i2c_read_raw(tuner_ids::FC0012_I2C_ADDR, 1).is_ok() {
+            if self.i2c_read_raw(registers::tuner_ids::FC0012_I2C_ADDR, 1).is_ok() {
                 found = TunerType::FC0012;
             }
         }

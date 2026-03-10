@@ -104,6 +104,7 @@ impl Driver {
         demod::set_if_freq_xtal(hw, registers::IF_FREQ_HZ as u32, xtal)?;
         demod::reset_demod(hw)?;
         self.frequency = hz;
+        log::trace!("Setting frequency: {:?}", hz);
         Ok(actual)
     }
 
