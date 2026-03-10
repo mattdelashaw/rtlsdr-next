@@ -304,8 +304,14 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
 
         let mut found = TunerType::Unknown(0);
 
+        // R820T at 0x34
         if self.i2c_read_raw(registers::tuner_ids::R82XX_I2C_ADDR, 1).is_ok() {
             found = TunerType::R820T;
+        }
+
+        // R828D at 0x74 (V4 and some other dongles)
+        if self.i2c_read_raw(registers::tuner_ids::R828D_I2C_ADDR, 1).is_ok() {
+            found = TunerType::R828D;
         }
 
         if let TunerType::Unknown(_) = found {
