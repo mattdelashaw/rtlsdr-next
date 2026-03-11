@@ -19,6 +19,12 @@ fn main() -> anyhow::Result<()> {
                 Err(e) => println!("  Frequency set FAILED: {:?}", e),
             }
 
+            println!("\nAttempting to set frequency to 7 MHz (HF - V4 check)...");
+            match driver.set_frequency(7_000_000) {
+                Ok(actual) => println!("  Success! Actual frequency: {} Hz", actual),
+                Err(e) => println!("  HF Frequency set FAILED: {:?}", e),
+            }
+
             println!("\nAttempting to read 1 second of samples...");
             let mut stream = driver.stream();
             let start = std::time::Instant::now();

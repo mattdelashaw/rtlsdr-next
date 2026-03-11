@@ -38,70 +38,62 @@ impl Driver {
     pub fn new() -> Result<Self> {
         let device = Arc::new(Device::open()?);
         let hw     = device.as_ref();
-        let is_v4  = device.info.is_v4;
-        let info   = device.info.clone();
 
-        // ── 1. RTL2832U baseband init ─────────────────────────────────────
+        // ── 1. RTL2832U baseband init ──
         demod::power_on(hw)?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // ── 2. GPIO reset for non-V4 sticks ─────────────────────────────
-        // librtlsdr: set_gpio_output(4), bit(4,1), bit(4,0) — reset pulse.
-        // V4 is detected by EEPROM and jumps to `found` BEFORE this GPIO code,
-        // so V4 does NOT get this pulse. We mirror that exactly.
-        if !is_v4 {
+        // ── 2. Read strings ──
+        let info = device.read_info();
+        let is_v4 = info.is_v4;
+        log::info!("Found RTL2832U — manufacturer: {:?} product: {:?} is_v4: {}", info.manufacturer, info.product, info.is_v4);
+
+        if is_v4 {
+            log::info!("Applying RTL-SDR Blog V4 GPIO power-up sequence...");
             hw.set_gpio_output(4)?;
+            hw.set_gpio_output(5)?;
             hw.set_gpio_bit(4, true)?;
-            hw.set_gpio_bit(4, false)?;
+            hw.set_gpio_bit(5, true)?;
+            std::thread::sleep(std::time::Duration::from_millis(250));
         }
 
-        // ── 3. Probe and initialize tuner ────────────────────────────────
+        // ── 3. Probe and initialize tuner ──
         let tuner_type = hw.probe_tuner()?;
         log::info!("Detected Tuner: {:?}", tuner_type);
 
         let tuner: Box<dyn Tuner> = match tuner_type {
-            TunerType::R820T | TunerType::R828D => {
-                Box::new(tuners::r828d::R828D::new(device.clone(), is_v4))
-            }
-            TunerType::Unknown(_) if is_v4 => {
-                log::warn!("Tuner I2C probe returned Unknown but EEPROM says V4 — forcing R828D");
-                Box::new(tuners::r828d::R828D::new(device.clone(), true))
-            }
-            _ => {
-                return Err(Error::UnsupportedTuner(format!("{:?} not yet supported", tuner_type)));
-            }
+            TunerType::R820T | TunerType::R828D => Box::new(tuners::r828d::R828D::new(device.clone(), is_v4)),
+            TunerType::Unknown(_) if is_v4 => Box::new(tuners::r828d::R828D::new(device.clone(), true)),
+            _ => return Err(Error::UnsupportedTuner(format!("{:?} not yet supported", tuner_type))),
         };
 
         tuner.initialize()?;
 
-        // ── 4. Post-detection demod config (matches librtlsdr found: block) ──
-        // Disable Zero-IF mode (0x1b -> 0x1a: clear bit 0)
-        demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0xb1, 0x1a)?;
-        // Only enable In-phase ADC input
-        demod::write_reg_direct(hw, registers::demod::P0_PAGE, 0x08, 0x4d)?;
+        // ── 4. Post-detection demod config for Low-IF ──
+        if matches!(tuner_type, TunerType::R820T | TunerType::R828D) || is_v4 {
+            demod::set_tuner_low_if(hw)?;
+            demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
+        }
 
-        // ── 5. Demodulator sync ───────────────────────────────────────────
-        demod::set_if_freq_xtal(hw, registers::IF_FREQ_HZ as u32, 28_800_000)?;
+        // ── 5. Demodulator sync ──
+        let initial_if = 2_300_000u32;
+        tuner.set_if_freq(initial_if as u64)?;
+        demod::set_if_freq_xtal(hw, initial_if, 28_800_000)?;
         demod::set_sample_rate_xtal(hw, DEFAULT_SAMPLE_RATE, 28_800_000)?;
         demod::reset_demod(hw)?;
         demod::start_streaming(hw)?;
 
         log::info!("RTL-SDR driver ready");
 
-        Ok(Self {
-            device,
-            info,
-            tuner,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            frequency:   0,
-            ppm:         0,
-        })
+        Ok(Self { device, info, tuner, sample_rate: DEFAULT_SAMPLE_RATE, frequency: 0, ppm: 0 })
     }
 
     pub fn set_frequency(&mut self, hz: u64) -> Result<u64> {
         let actual = self.tuner.set_frequency(hz)?;
         let hw     = self.device.as_ref();
         let xtal   = self.corrected_xtal_hz();
-        demod::set_if_freq_xtal(hw, registers::IF_FREQ_HZ as u32, xtal)?;
+        let if_hz  = self.tuner.get_if_freq();
+        demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
         demod::reset_demod(hw)?;
         self.frequency = hz;
         log::trace!("Setting frequency: {:?}", hz);
@@ -111,7 +103,10 @@ impl Driver {
     pub fn set_sample_rate(&mut self, rate_hz: u32) -> Result<()> {
         let hw   = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
+        let if_hz = if rate_hz < 2_500_000 { 2_300_000 } else { 3_570_000 };
+        self.tuner.set_if_freq(if_hz)?;
         demod::set_sample_rate_xtal(hw, rate_hz, xtal)?;
+        demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
         demod::reset_demod(hw)?;
         self.sample_rate = rate_hz;
         Ok(())
@@ -127,28 +122,26 @@ impl Driver {
         Ok(())
     }
 
+    pub fn set_bias_t(&self, on: bool) -> Result<()> {
+        let hw = self.device.as_ref();
+        hw.set_gpio_output(0)?;
+        hw.set_gpio_bit(0, on)?;
+        log::info!("Bias-T turned {}", if on { "ON" } else { "OFF" });
+        Ok(())
+    }
+
     fn corrected_xtal_hz(&self) -> u32 {
         let nominal = 28_800_000i64;
         let offset  = (nominal * self.ppm as i64) / 1_000_000;
         (nominal + offset) as u32
     }
 
-    pub fn stream(&self) -> SampleStream<rusb::Context> {
-        SampleStream::new(self.device.clone())
-    }
+    pub fn stream(&self) -> SampleStream<rusb::Context> { SampleStream::new(self.device.clone()) }
+    pub fn stream_f32(&self, factor: usize) -> F32Stream<rusb::Context> { F32Stream::new(self.stream(), factor) }
 
-    pub fn stream_f32(&self, factor: usize) -> F32Stream<rusb::Context> {
-        let s: SampleStream<rusb::Context> = self.stream();
-        F32Stream::new(s, factor)
-    }
-
-    pub async fn start_sharing<P: AsRef<std::path::Path>>(
-        &self,
-        path: P,
-    ) -> Result<SharingServer> {
+    pub async fn start_sharing<P: AsRef<std::path::Path>>(&self, path: P) -> Result<SharingServer> {
         let mut stream = self.stream();
         let (tx, rx)   = tokio::sync::broadcast::channel::<Arc<Vec<u8>>>(16);
-
         tokio::spawn(async move {
             while let Some(res) = stream.next().await {
                 match res {
@@ -157,15 +150,10 @@ impl Driver {
                 }
             }
         });
-
-        SharingServer::start(path, rx)
-            .await
-            .map_err(|e| Error::Tuner(format!("Server error: {:?}", e)))
+        SharingServer::start(path, rx).await.map_err(|e| Error::Tuner(format!("Server error: {:?}", e)))
     }
 
     pub async fn start_rtl_tcp(self, addr: &str) -> Result<TcpServer> {
-        TcpServer::start(self, addr)
-            .await
-            .map_err(|e| Error::Tuner(format!("TCP Server error: {:?}", e)))
+        TcpServer::start(self, addr).await.map_err(|e| Error::Tuner(format!("TCP Server error: {:?}", e)))
     }
 }

@@ -135,7 +135,7 @@ async fn handle_client(
                 // 0x09: set direct sampling — ignore (V4 handles this internally)
                 // 0x0a: set offset tuning — ignore
                 0x08 | 0x09 | 0x0a => {}
-                0x0e => { let _ = d.tuner.set_bias_t(arg != 0); }
+                0x0e => { let _ = d.set_bias_t(arg != 0); }
                 _ => { warn!("Unsupported rtl_tcp command: 0x{:02x}", cmd); }
             }
         }

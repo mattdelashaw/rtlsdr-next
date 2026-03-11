@@ -31,8 +31,11 @@ pub trait Tuner: Send + Sync {
     /// Get the supported filter ranges (useful for V4 Triplexer).
     fn get_filters(&self) -> Vec<FilterRange>;
     
-    /// Toggle the Bias-T power.
-    fn set_bias_t(&self, on: bool) -> Result<()>;
+    /// Set the IF frequency correction in Hz.
+    fn set_if_freq(&self, hz: u64) -> Result<()>;
+
+    /// Get the current IF frequency in Hz.
+    fn get_if_freq(&self) -> u64;
 
     /// Set the crystal frequency correction in Parts Per Million (PPM).
     fn set_ppm(&self, ppm: i32) -> Result<()>;
