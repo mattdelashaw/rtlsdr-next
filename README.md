@@ -1,5 +1,4 @@
 # rtlsdr-next 📡
-❗*Not hardware tested - bare with me here(README) too*❗
 
 A high-performance, asynchronous, and safety-first Rust driver for RTL2832U-based Software Defined Radios (SDR). 
 
@@ -8,11 +7,21 @@ Designed for the modern era (2026+), this driver moves away from the legacy C ca
 ## 🚀 Key Features
 
 *   **Async-First Architecture:** Built on `Tokio`. SDR data is a standard `Stream` with backpressure and graceful shutdown.
-*   **Zero-Allocation Pipeline:** Uses a custom `PooledVec` system to eliminate memory allocations in the hot loop. The CPU cycles are spent on DSP, not memory management.
-*   **NEON SIMD Acceleration:** optimized ARM NEON intrinsics for `u8` -> `f32` conversion and FIR filtering.
+*   **Full RTL-SDR Blog V4 Support:** Specialized logic for the R828D tuner, built-in upconverter, triplexer, and dynamic notch filters.
+*   **Zero-Allocation Pipeline:** Uses a custom buffer pooling system to eliminate memory allocations in the hot loop.
+*   **NEON SIMD Acceleration:** Optimized ARM NEON intrinsics for `u8` -> `f32` conversion and FIR filtering.
 *   **Automatic Tuner Probing:** Performs an I2C handshake to identify Rafael Micro (R820T/R828D), Elonics (E4000), or Fitipower (FC0012/13) chips automatically.
-*   **Zero-Copy Broadcasting:** Efficiently share a single hardware device across multiple local apps using `Arc`-based broadcasting over Unix Domain Sockets.
+*   **Zero-Copy Broadcasting:** Efficiently share a single hardware device across multiple local apps using `Arc`-based broadcasting.
 *   **Precision Frequency Correction:** Integrated PPM correction for both the tuner PLL and the RTL2832U resampler.
+
+## 🛠 Hardware Intel: The V4 Deep Dive
+
+The RTL-SDR Blog V4 requires several "hidden" initialization steps discovered during reverse engineering of the official C drivers:
+
+1.  **The "Master Switch" (GPIO 4 & 5):** The V4 features a complex **Triplexer** front-end. This hardware must be explicitly powered on by toggling GPIO 4 and 5 during initialization, or the tuner remains isolated from the SMA input.
+2.  **R828D "Bit-Reverse" Hack:** The R828D tuner chip communicates via I2C MSB-first, while the RTL2832U expects LSB-first. This driver automatically bit-reverses status reads to ensure correct PLL locking.
+3.  **Integrated 28.8 MHz Upconversion:** Logic for the built-in HF upconverter is baked into the driver. Tuning to 7 MHz automatically handles the 28.8 MHz offset. **Do not set an upconverter offset in your client software.**
+4.  **Dynamic Notch Filters:** Hardware notch filters for FM/AM are dynamically toggled based on the target frequency to ensure optimal signal clarity.
 
 ## 🚀 Performance
 
@@ -44,6 +53,15 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+## 🎛 Optimal Client Settings (OpenWebRX / GQRX)
+
+For the best experience with the **RTL-SDR Blog V4**:
+
+*   **Sample Rate:** **2.4 MSPS**. Extremely stable on the V4.
+*   **Frequency Offset:** **0 Hz**. Handled internally for HF upconversion.
+*   **Gain:** **Manual (30-40 dB)**. Start here and adjust based on the noise floor.
+*   **PPM:** **0**. The V4's TCXO is typically highly accurate out of the box.
+
 ## 📊 Benchmarking
 
 The project includes a professional Criterion benchmark suite to verify DSP performance:
@@ -56,17 +74,21 @@ Measurements taken on an ARM64 host comparing the `rtlsdr-next` Rust implementat
 
 | Task | librtlsdr (C) | rtlsdr-next (Rust) |
 | :--- | :--- | :--- |
-| **Standard Conversion** | ~174 µs | **~91 µs** |
+| **u8 -> f32 Conversion** | ~174 µs | **~91 µs** |
 | **V4 HF Inversion** (1-pass) | ~259 µs | **~110 µs** |
 | **FIR Decimation** (8x, 33-tap) | N/A | **~392 µs** |
 
 *Note: The performance gain in conversion is primarily due to moving from cache-latency-bound lookup tables to instruction-parallel arithmetic, which better utilizes modern out-of-order CPU pipelines.*
 
-## 🛠 Running the Example
+## 🛠 Running the Examples
 
-Once your hardware is plugged in, try the included monitor example:
+Once your hardware is plugged in, try the included monitor or rtl_tcp examples:
 ```bash
+# Monitor hardware state
 RUST_LOG=info cargo run --example monitor
+
+# Start an rtl_tcp compatible server
+RUST_LOG=info cargo run --example rtl_tcp -- --addr 0.0.0.0:1234
 ```
 
 ## 🗺 Roadmap - Phase Shifting
