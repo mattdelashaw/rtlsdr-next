@@ -85,21 +85,23 @@ async fn ws_handler(
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
     // Send initial hardware info
-    let (info, freq, gain) = {
+    let (info, _freq, _gain) = {
         let d = state.driver.lock().await;
-        (d.info.clone(), d.frequency, d.tuner.get_gain().unwrap_or(0.0))
+        (d.info.clone(), d.frequency, d.tuner.get_gain().unwrap_or_else(|_| 0.0))
     };
     
-    let _ = socket.send(Message::Text(serde_json::to_string(&WebEvent::HardwareInfo {
+    let json = serde_json::to_string(&WebEvent::HardwareInfo {
         manufacturer: info.manufacturer,
         product: info.product,
         is_v4: info.is_v4,
-    }).unwrap().into())).await;
+    }).expect("Serialization failed");
+    
+    let _ = socket.send(Message::Text(json.into())).await;
 
     let mut waterfall_rx = state.waterfall_tx.subscribe();
     let mut audio_rx     = state.audio_tx.subscribe();
 
-    let (mut sender, mut receiver) = socket.split();
+    let (sender, mut receiver) = socket.split();
 
     // Task: Push waterfall (binary)
     let sender_shared = Arc::new(Mutex::new(sender));

@@ -2,7 +2,7 @@
 
 use crate::device::HardwareInterface;
 use crate::error::Result;
-use crate::registers::{block, usb, sys, demod, IF_FREQ_HZ, XTAL_FREQ_HZ};
+use crate::registers::{block, usb, sys, demod};
 use log::debug;
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 2_048_000;

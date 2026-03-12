@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use rusb::{Context, DeviceHandle, UsbContext};
-use log::{debug, info, error};
+use log::{debug, error};
 
 use crate::error::{Error, Result};
 use crate::registers::{self, BREQUEST, block};
@@ -141,11 +141,9 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
 
     fn i2c_read_tuner(&self, addr: u8, reg: u8, len: usize) -> Result<Vec<u8>> {
         self.set_i2c_repeater(true)?;
-        let mut res = self.i2c_write_raw(addr, &[reg]);
-        let data = if res.is_ok() {
-            self.i2c_read_raw(addr, len)
-        } else {
-            Err(res.err().unwrap())
+        let data = match self.i2c_write_raw(addr, &[reg]) {
+            Ok(_) => self.i2c_read_raw(addr, len),
+            Err(e) => Err(e),
         };
         let _ = self.set_i2c_repeater(false);
         data

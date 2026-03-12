@@ -3,7 +3,7 @@ use crate::tuner::{Tuner, FilterRange};
 use crate::error::{Error, Result};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use log::{warn, debug};
+use log::warn;
 
 const I2C_ADDR: u8 = 0x74;
 const NUM_REGS: usize = 27;
@@ -106,7 +106,7 @@ impl R828D {
 
     fn write_reg_mask(&self, reg: u8, val: u8, mask: u8) -> Result<()> {
         let new = {
-            let mut regs = self.regs.lock().unwrap();
+            let mut regs = self.regs.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))?;
             let idx = (reg - REG_SHADOW_START) as usize;
             if idx >= NUM_REGS { return Err(Error::Tuner(format!("Register 0x{:02x} out of range", reg))); }
             let old = regs[idx];
@@ -131,7 +131,7 @@ impl R828D {
             for byte in status.iter_mut() { *byte = bit_reverse(*byte); }
 
             if status[2] & 0x40 != 0 {
-                *self.has_lock.lock().unwrap() = true;
+                *self.has_lock.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = true;
                 return Ok(true);
             }
             if i == 0 {
@@ -139,13 +139,13 @@ impl R828D {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        *self.has_lock.lock().unwrap() = false;
+        *self.has_lock.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = false;
         warn!("PLL not locked after {} retries", retries);
         Ok(false)
     }
 
     fn set_pll(&self, lo_freq_hz: u64) -> Result<u64> {
-        let pll_ref = *self.xtal_freq.lock().unwrap();
+        let pll_ref = *self.xtal_freq.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))?;
         let pll_ref_khz = pll_ref / 1000;
 
         let mut mix_div: u64 = 2;
@@ -277,7 +277,7 @@ impl Tuner for R828D {
 
     fn set_frequency(&self, hz: u64) -> Result<u64> {
         if hz == 0 { return Err(Error::InvalidFrequency(hz)); }
-        let current_if = *self.current_if.lock().unwrap();
+        let current_if = *self.current_if.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))?;
         let mut lo_freq = hz + current_if;
         if self.is_v4 && hz < 28_800_000 { lo_freq += 28_800_000; }
         self.set_mux(hz)?;
@@ -288,7 +288,7 @@ impl Tuner for R828D {
 
     fn set_gain(&self, db: f32) -> Result<f32> {
         let target_tenths = (db * 10.0) as i32;
-        let (idx, _) = GAIN_STEPS.iter().enumerate().min_by_key(|&(_, g)| (g - target_tenths).abs()).unwrap();
+        let (idx, _) = GAIN_STEPS.iter().enumerate().min_by_key(|&(_, g)| (g - target_tenths).abs()).ok_or_else(|| Error::InvalidGain(target_tenths))?;
         let cfg = &GAIN_TABLE[idx];
         self.write_reg_mask(0x05, 0x10, 0x10)?; 
         self.write_reg_mask(0x07, 0x00, 0x10)?; 
@@ -296,11 +296,11 @@ impl Tuner for R828D {
         self.write_reg_mask(0x07, cfg.mix, 0x0f)?;
         self.write_reg_mask(0x0c, cfg.vga, 0x0f)?;
         let actual = GAIN_STEPS[idx] as f32 / 10.0;
-        *self.current_gain.lock().unwrap() = actual;
+        *self.current_gain.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = actual;
         Ok(actual)
     }
 
-    fn get_gain(&self) -> Result<f32> { Ok(*self.current_gain.lock().unwrap()) }
+    fn get_gain(&self) -> Result<f32> { Ok(*self.current_gain.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))?) }
     fn get_filters(&self) -> Vec<FilterRange> {
         if self.is_v4 {
             vec![
@@ -313,16 +313,16 @@ impl Tuner for R828D {
         }
     }
     fn set_if_freq(&self, hz: u64) -> Result<()> {
-        *self.current_if.lock().unwrap() = hz;
+        *self.current_if.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = hz;
         self.set_bandwidth(hz)?;
         Ok(())
     }
-    fn get_if_freq(&self) -> u64 { *self.current_if.lock().unwrap() }
+    fn get_if_freq(&self) -> u64 { *self.current_if.lock().expect("Mutex poisoned") }
     fn set_ppm(&self, ppm: i32) -> Result<()> {
         let nominal = if self.is_v4 { 28_800_000u64 } else { 16_000_000u64 };
         let offset = (nominal as i64 * ppm as i64) / 1_000_000;
         let actual = (nominal as i64 + offset) as u64;
-        *self.xtal_freq.lock().unwrap() = actual;
+        *self.xtal_freq.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = actual;
         Ok(())
     }
 }

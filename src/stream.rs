@@ -1,5 +1,5 @@
 use crate::device::{Device, TransportBuffer, HardwareInterface};
-use crate::error::{Error, Result};
+use crate::error::Error;
 use rusb::UsbContext;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -29,11 +29,11 @@ impl<B> PooledBuffer<B> {
 
 impl<B> Deref for PooledBuffer<B> {
     type Target = B;
-    fn deref(&self) -> &Self::Target { self.inner.as_ref().unwrap() }
+    fn deref(&self) -> &Self::Target { self.inner.as_ref().expect("PooledBuffer accessed after drop") }
 }
 
 impl<B> DerefMut for PooledBuffer<B> {
-    fn deref_mut(&mut self) -> &mut Self::Target { self.inner.as_mut().unwrap() }
+    fn deref_mut(&mut self) -> &mut Self::Target { self.inner.as_mut().expect("PooledBuffer accessed after drop") }
 }
 
 impl<B> Drop for PooledBuffer<B> {
@@ -142,12 +142,16 @@ impl<T: UsbContext + 'static> F32Stream<T> {
         };
 
         let (p1_tx, p1_rx) = mpsc::channel(NUM_BUFFERS);
-        for _ in 0..NUM_BUFFERS { p1_tx.try_send(vec![0.0f32; BUFFER_SIZE]).unwrap(); }
+        for _ in 0..NUM_BUFFERS { 
+            let _ = p1_tx.try_send(vec![0.0f32; BUFFER_SIZE]); 
+        }
 
         let (p2_tx, p2_rx) = mpsc::channel(NUM_BUFFERS);
         if decimation_factor > 1 {
             let decimated_size = BUFFER_SIZE / decimation_factor + 16;
-            for _ in 0..NUM_BUFFERS { p2_tx.try_send(vec![0.0f32; decimated_size]).unwrap(); }
+            for _ in 0..NUM_BUFFERS { 
+                let _ = p2_tx.try_send(vec![0.0f32; decimated_size]); 
+            }
         }
 
         Self {
@@ -181,9 +185,12 @@ impl<T: UsbContext + 'static> F32Stream<T> {
         };
         
         // Deref the PooledBuffer to get TransportBuffer, then deref that to get &[u8]
-        let u8_data = &*u8_data_buffer;
+        let u8_data = &**u8_data_buffer;
 
-        let mut f32_buf = self.pool_f32_rx.recv().await.unwrap();
+        let mut f32_buf = match self.pool_f32_rx.recv().await {
+            Some(b) => b,
+            None => return Some(Err(Error::ChannelClosed)),
+        };
         if f32_buf.len() != u8_data.len() { f32_buf.resize(u8_data.len(), 0.0); }
 
         converter::convert(u8_data, &mut f32_buf);
@@ -192,7 +199,10 @@ impl<T: UsbContext + 'static> F32Stream<T> {
         if let Some(agc) = &mut self.agc { agc.process(&mut f32_buf); }
 
         if let Some(dec) = &mut self.decimator {
-            let mut dec_buf = self.pool_dec_rx.recv().await.unwrap();
+            let mut dec_buf = match self.pool_dec_rx.recv().await {
+                Some(b) => b,
+                None => return Some(Err(Error::ChannelClosed)),
+            };
             dec.process_into(&f32_buf, &mut dec_buf);
             
             // Return intermediate buffer to pool
