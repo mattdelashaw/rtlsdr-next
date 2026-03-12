@@ -1,18 +1,26 @@
+//! R828D / R820T chip driver — pure chip implementation.
+//!
+//! This module knows only about the R828D silicon: PLL math, register maps,
+//! gain tables, IF bandwidth. It has no knowledge of which board it is
+//! mounted on. All GPIO, triplexer, and notch-filter logic lives in the
+//! `Driver` orchestrator (`lib.rs`) via `BoardConfig`.
+
 use crate::device::HardwareInterface;
 use crate::tuner::{Tuner, FilterRange};
 use crate::error::{Error, Result};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
-use log::warn;
+use log::{warn, debug};
 
-const I2C_ADDR: u8 = 0x74;
-const NUM_REGS: usize = 27;
-const REG_SHADOW_START: u8 = 0x05;
+const I2C_ADDR:         u8    = 0x74;
+const NUM_REGS:         usize = 27;
+const REG_SHADOW_START: u8    = 0x05;
 
 const VCO_MIN: u64 = 1_770_000_000;
 const VCO_MAX: u64 = 3_600_000_000;
 
-const IF_FREQ_WIDE: u64 = 3_570_000;
+const IF_FREQ_WIDE:   u64 = 3_570_000;
 const IF_FREQ_NARROW: u64 = 2_300_000;
 
 const GAIN_STEPS: [i32; 29] = [
@@ -55,60 +63,67 @@ static INIT_ARRAY: [u8; NUM_REGS] = [
 struct FreqRange { freq_hz: u64, open_d: u8, rf_mux_ploy: u8, tf_c: u8, xtal_cap_sel: u8 }
 
 static FREQ_RANGES: &[FreqRange] = &[
-    FreqRange { freq_hz:          0, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0xdf, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:   50_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0xbe, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:   55_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x8b, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:   60_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x7b, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:   65_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x69, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:   70_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x58, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:   75_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x44, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:   80_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x44, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:   90_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x34, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  100_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x34, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  110_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x24, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  120_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x24, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  140_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x14, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  180_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x13, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  220_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x13, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  250_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x11, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  280_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x00, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  310_000_000, open_d: 0x00, rf_mux_ploy: 0x41, tf_c: 0x00, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  450_000_000, open_d: 0x00, rf_mux_ploy: 0x41, tf_c: 0x00, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  588_000_000, open_d: 0x00, rf_mux_ploy: 0x40, tf_c: 0x00, xtal_cap_sel: 0 },
-    FreqRange { freq_hz:  650_000_000, open_d: 0x00, rf_mux_ploy: 0x40, tf_c: 0x00, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:           0, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0xdf, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:  50_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0xbe, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:  55_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x8b, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:  60_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x7b, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:  65_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x69, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:  70_000_000, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x58, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:  75_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x44, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:  80_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x44, xtal_cap_sel: 0 },
+    FreqRange { freq_hz:  90_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x34, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 100_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x34, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 110_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x24, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 120_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x24, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 140_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x14, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 180_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x13, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 220_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x13, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 250_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x11, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 280_000_000, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x00, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 310_000_000, open_d: 0x00, rf_mux_ploy: 0x41, tf_c: 0x00, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 450_000_000, open_d: 0x00, rf_mux_ploy: 0x41, tf_c: 0x00, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 588_000_000, open_d: 0x00, rf_mux_ploy: 0x40, tf_c: 0x00, xtal_cap_sel: 0 },
+    FreqRange { freq_hz: 650_000_000, open_d: 0x00, rf_mux_ploy: 0x40, tf_c: 0x00, xtal_cap_sel: 0 },
 ];
 
 static XTAL_CAP_SEL: [u8; 5] = [0x0b, 0x0b, 0x0b, 0x0b, 0x00];
 
+// ── parking_lot::Mutex: no poisoning, no Result unwrap, never blocks the
+//    Tokio executor even when locked from sync context. ──────────────────
 pub struct R828D {
-    device:     Arc<dyn HardwareInterface>,
-    regs:       Mutex<[u8; NUM_REGS]>,
-    xtal_freq:  Mutex<u64>,
-    is_v4:      bool,
-    has_lock:   Mutex<bool>,
+    device:       Arc<dyn HardwareInterface>,
+    regs:         Mutex<[u8; NUM_REGS]>,
+    xtal_freq:    Mutex<u64>,
+    has_lock:     Mutex<bool>,
     current_gain: Mutex<f32>,
     current_if:   Mutex<u64>,
+    /// Notch state set by the orchestrator via `apply_notch`.
+    /// `true`  → frequency is inside a notch band, suppress open_d.
+    /// `false` → normal operation, use table value.
+    in_notch:     Mutex<bool>,
 }
 
 impl R828D {
-    pub fn new(device: Arc<dyn HardwareInterface>, is_v4: bool) -> Self {
-        let xtal = if is_v4 { 28_800_000 } else { 16_000_000 };
+    /// `xtal_hz`: 28_800_000 for R828D/V4, 16_000_000 for R820T.
+    pub fn new(device: Arc<dyn HardwareInterface>, xtal_hz: u64) -> Self {
         Self {
             device,
-            regs:      Mutex::new(INIT_ARRAY),
-            xtal_freq: Mutex::new(xtal),
-            is_v4,
-            has_lock:  Mutex::new(false),
+            regs:         Mutex::new(INIT_ARRAY),
+            xtal_freq:    Mutex::new(xtal_hz),
+            has_lock:     Mutex::new(false),
             current_gain: Mutex::new(0.0),
             current_if:   Mutex::new(IF_FREQ_NARROW),
+            in_notch:     Mutex::new(false),
         }
     }
 
     fn write_reg_mask(&self, reg: u8, val: u8, mask: u8) -> Result<()> {
         let new = {
-            let mut regs = self.regs.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))?;
+            let mut regs = self.regs.lock();
             let idx = (reg - REG_SHADOW_START) as usize;
-            if idx >= NUM_REGS { return Err(Error::Tuner(format!("Register 0x{:02x} out of range", reg))); }
+            if idx >= NUM_REGS {
+                return Err(Error::Tuner(format!("Register 0x{:02x} out of range", reg)));
+            }
             let old = regs[idx];
             let new = (old & !mask) | (val & mask);
             regs[idx] = new;
@@ -129,27 +144,24 @@ impl R828D {
             self.device.i2c_write_tuner(I2C_ADDR, 0x00, &[])?;
             let mut status = self.device.i2c_read_direct(I2C_ADDR, 3)?;
             for byte in status.iter_mut() { *byte = bit_reverse(*byte); }
-
             if status[2] & 0x40 != 0 {
-                *self.has_lock.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = true;
+                *self.has_lock.lock() = true;
                 return Ok(true);
             }
-            if i == 0 {
-                self.write_reg_mask(0x12, 0x06, 0xff)?;
-            }
+            if i == 0 { self.write_reg_mask(0x12, 0x06, 0xff)?; }
             std::thread::sleep(Duration::from_millis(1));
         }
-        *self.has_lock.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = false;
+        *self.has_lock.lock() = false;
         warn!("PLL not locked after {} retries", retries);
         Ok(false)
     }
 
     fn set_pll(&self, lo_freq_hz: u64) -> Result<u64> {
-        let pll_ref = *self.xtal_freq.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))?;
+        let pll_ref     = *self.xtal_freq.lock();
         let pll_ref_khz = pll_ref / 1000;
 
         let mut mix_div: u64 = 2;
-        let mut div_num: u8 = 0;
+        let mut div_num: u8  = 0;
         while mix_div <= 64 {
             let vco = lo_freq_hz * mix_div;
             if vco >= VCO_MIN && vco < VCO_MAX {
@@ -162,17 +174,18 @@ impl R828D {
         if mix_div > 64 { return Err(Error::InvalidFrequency(lo_freq_hz)); }
 
         let vco_freq = lo_freq_hz * mix_div;
-        let status = self.read_status()?;
-        let vco_fine_tune = (status[4] & 0x30) >> 4;
-        let vco_power_ref = if self.is_v4 { 1 } else { 2 };
-        if vco_fine_tune > vco_power_ref { div_num = div_num.saturating_sub(1); }
-        else if vco_fine_tune < vco_power_ref { div_num += 1; }
+        let status   = self.read_status()?;
+        let vco_fine_tune  = (status[4] & 0x30) >> 4;
+        // R828D VCO power ref = 1, R820T = 2. We use 1 (R828D default).
+        let vco_power_ref: u64 = 1;
+        if vco_fine_tune > vco_power_ref as u8 { div_num = div_num.saturating_sub(1); }
+        else if (vco_fine_tune as u64) < vco_power_ref { div_num += 1; }
 
         self.write_reg_mask(0x10, div_num << 5, 0xe0)?;
 
-        let nint: u64 = vco_freq / (2 * pll_ref);
+        let nint:    u64 = vco_freq / (2 * pll_ref);
         let mut vco_fra: u64 = (vco_freq - 2 * pll_ref * nint) / 1000;
-        if nint > (128 / vco_power_ref as u64) - 1 { return Err(Error::InvalidFrequency(lo_freq_hz)); }
+        if nint > (128 / vco_power_ref) - 1 { return Err(Error::InvalidFrequency(lo_freq_hz)); }
 
         let ni = ((nint - 13) / 4) as u8;
         let si = (nint as u8).wrapping_sub(4u8.wrapping_mul(ni).wrapping_add(13));
@@ -181,7 +194,7 @@ impl R828D {
         let pw_sdm: u8 = if vco_fra == 0 { 0x08 } else { 0x00 };
         self.write_reg_mask(0x12, pw_sdm, 0x08)?;
 
-        let mut sdm: u32 = 0;
+        let mut sdm: u32   = 0;
         let mut n_sdm: u32 = 2;
         while vco_fra > 1 {
             if vco_fra > (2 * pll_ref_khz / n_sdm as u64) {
@@ -194,9 +207,7 @@ impl R828D {
         self.device.i2c_write_tuner(I2C_ADDR, 0x16, &[(sdm >> 8) as u8])?;
         self.device.i2c_write_tuner(I2C_ADDR, 0x15, &[(sdm & 0xff) as u8])?;
 
-        if self.wait_pll_lock(10)? {
-             self.write_reg_mask(0x1a, 0x08, 0x08)?;
-        }
+        if self.wait_pll_lock(10)? { self.write_reg_mask(0x1a, 0x08, 0x08)?; }
         Ok(lo_freq_hz)
     }
 
@@ -207,57 +218,30 @@ impl R828D {
         Ok(())
     }
 
+    /// Set the RF MUX/filter stage. Uses the frequency range table for all
+    /// parameters. The `open_d` field is overridden externally via
+    /// `apply_notch` on V4 boards — this method uses the stored notch state.
     fn set_mux(&self, freq_hz: u64) -> Result<()> {
-        let range = FREQ_RANGES.iter().rev().find(|r| freq_hz >= r.freq_hz).unwrap_or(&FREQ_RANGES[0]);
+        let range = FREQ_RANGES.iter().rev()
+            .find(|r| freq_hz >= r.freq_hz)
+            .unwrap_or(&FREQ_RANGES[0]);
+
         self.write_reg_mask(0x17, 0xa0, 0x30)?;
-        
-        if self.is_v4 {
-            // V4 Dynamic Notch Filter Logic:
-            // Turn OFF (0x00) within notch bands, ON (0x08) otherwise.
-            let open_d = if freq_hz <= 2_200_000 
-                || (freq_hz >= 85_000_000 && freq_hz <= 112_000_000) 
-                || (freq_hz >= 172_000_000 && freq_hz <= 242_000_000) { 0x00 } else { 0x08 };
-            self.write_reg_mask(0x17, open_d, 0x08)?;
-        } else {
-            self.write_reg_mask(0x17, range.open_d, 0x08)?;
-        }
+
+        // open_d: suppressed (0x00) in notch bands, normal table value otherwise.
+        let open_d = if *self.in_notch.lock() { 0x00 } else { range.open_d };
+        self.write_reg_mask(0x17, open_d, 0x08)?;
 
         self.write_reg_mask(0x1a, range.rf_mux_ploy, 0xc3)?;
-        self.write_reg_mask(0x1b, range.tf_c, 0xff)?;
+        self.write_reg_mask(0x1b, range.tf_c,        0xff)?;
         let cap = XTAL_CAP_SEL[range.xtal_cap_sel as usize];
-        self.write_reg_mask(0x10, cap, 0x0b)?;
+        self.write_reg_mask(0x10, cap,  0x0b)?;
         self.write_reg_mask(0x08, 0x00, 0x3f)?;
         self.write_reg_mask(0x09, 0x00, 0x3f)?;
         self.write_reg_mask(0x1d, 0x18, 0x38)?;
         self.write_reg_mask(0x1c, 0x24, 0x04)?;
-        self.write_reg_mask(0x1e, 14, 0x1f)?;
+        self.write_reg_mask(0x1e, 14,   0x1f)?;
         self.write_reg_mask(0x1a, 0x20, 0x30)?;
-        Ok(())
-    }
-
-    pub(crate) fn set_v4_input(&self, freq_hz: u64) -> Result<()> {
-        if freq_hz < 28_800_000 {
-            // HF Input (Cable 2)
-            self.write_reg_mask(0x06, 0x08, 0x08)?; // activate cable 2
-            self.device.set_gpio_output(5)?;
-            self.device.set_gpio_bit(5, false)?;    // control upconverter switch
-            self.write_reg_mask(0x05, 0x00, 0x40)?; // deactivate cable 1 (VHF)
-            self.write_reg_mask(0x05, 0x20, 0x20)?; // deactivate air_in (UHF)
-        } else if freq_hz < 250_000_000 {
-            // VHF Input (Cable 1)
-            self.write_reg_mask(0x06, 0x00, 0x08)?; // deactivate cable 2
-            self.device.set_gpio_output(5)?;
-            self.device.set_gpio_bit(5, true)?;     // control upconverter switch
-            self.write_reg_mask(0x05, 0x40, 0x40)?; // activate cable 1
-            self.write_reg_mask(0x05, 0x20, 0x20)?; // deactivate air_in (UHF)
-        } else {
-            // UHF Input (Air In)
-            self.write_reg_mask(0x06, 0x00, 0x08)?; // deactivate cable 2
-            self.device.set_gpio_output(5)?;
-            self.device.set_gpio_bit(5, true)?;     // control upconverter switch
-            self.write_reg_mask(0x05, 0x00, 0x40)?; // deactivate cable 1
-            self.write_reg_mask(0x05, 0x00, 0x20)?; // activate air_in
-        }
         Ok(())
     }
 }
@@ -277,52 +261,87 @@ impl Tuner for R828D {
 
     fn set_frequency(&self, hz: u64) -> Result<u64> {
         if hz == 0 { return Err(Error::InvalidFrequency(hz)); }
-        let current_if = *self.current_if.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))?;
-        let mut lo_freq = hz + current_if;
-        if self.is_v4 && hz < 28_800_000 { lo_freq += 28_800_000; }
+        let current_if = *self.current_if.lock();
+        let lo_freq    = hz + current_if;
+        // No V4 LO offset here — the orchestrator handles HF path detection
+        // and passes the already-corrected frequency if needed.
         self.set_mux(hz)?;
-        if self.is_v4 { self.set_v4_input(hz)?; }
         self.set_pll(lo_freq)?;
         Ok(hz)
     }
 
     fn set_gain(&self, db: f32) -> Result<f32> {
         let target_tenths = (db * 10.0) as i32;
-        let (idx, _) = GAIN_STEPS.iter().enumerate().min_by_key(|&(_, g)| (g - target_tenths).abs()).ok_or_else(|| Error::InvalidGain(target_tenths))?;
+        let (idx, _) = GAIN_STEPS.iter().enumerate()
+            .min_by_key(|&(_, g)| (g - target_tenths).abs())
+            .ok_or_else(|| Error::Tuner("Empty gain table".into()))?;
         let cfg = &GAIN_TABLE[idx];
-        self.write_reg_mask(0x05, 0x10, 0x10)?; 
+        
+        // 0x05: bits 0-3 are LNA gain. bits 5-6 are V4 antenna mux.
+        // We MUST use a mask (0x0f) here or we stomp the V4 antenna setting.
+        self.write_reg_mask(0x05, 0x10, 0x10)?; // set manual gain bit
         self.write_reg_mask(0x07, 0x00, 0x10)?; 
-        self.write_reg_mask(0x05, cfg.lna, 0x0f)?;
+        self.write_reg_mask(0x05, cfg.lna, 0x0f)?; // LNA gain bits 0-3
         self.write_reg_mask(0x07, cfg.mix, 0x0f)?;
         self.write_reg_mask(0x0c, cfg.vga, 0x0f)?;
+        
         let actual = GAIN_STEPS[idx] as f32 / 10.0;
-        *self.current_gain.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = actual;
+        *self.current_gain.lock() = actual;
         Ok(actual)
     }
 
-    fn get_gain(&self) -> Result<f32> { Ok(*self.current_gain.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))?) }
+    fn get_gain(&self) -> Result<f32> { Ok(*self.current_gain.lock()) }
+
     fn get_filters(&self) -> Vec<FilterRange> {
-        if self.is_v4 {
-            vec![
-                FilterRange { start_hz: 0,           end_hz: 28_799_999   },
-                FilterRange { start_hz: 28_800_000,  end_hz: 249_999_999  },
-                FilterRange { start_hz: 250_000_000, end_hz: 1_766_000_000},
-            ]
-        } else {
-            vec![FilterRange { start_hz: 0, end_hz: 1_766_000_000 }]
-        }
+        // Generic: the full chip range. Board-specific ranges (V4 triplexer
+        // bands) are reported by the Driver orchestrator if needed.
+        vec![FilterRange { start_hz: 0, end_hz: 1_766_000_000 }]
     }
+
     fn set_if_freq(&self, hz: u64) -> Result<()> {
-        *self.current_if.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = hz;
+        *self.current_if.lock() = hz;
         self.set_bandwidth(hz)?;
         Ok(())
     }
-    fn get_if_freq(&self) -> u64 { *self.current_if.lock().expect("Mutex poisoned") }
+
+    fn get_if_freq(&self) -> u64 { *self.current_if.lock() }
+
     fn set_ppm(&self, ppm: i32) -> Result<()> {
-        let nominal = if self.is_v4 { 28_800_000u64 } else { 16_000_000u64 };
-        let offset = (nominal as i64 * ppm as i64) / 1_000_000;
-        let actual = (nominal as i64 + offset) as u64;
-        *self.xtal_freq.lock().map_err(|e| Error::MutexPoisoned(e.to_string()))? = actual;
+        let nominal = *self.xtal_freq.lock();
+        let offset  = (nominal as i64 * ppm as i64) / 1_000_000;
+        *self.xtal_freq.lock() = (nominal as i64 + offset) as u64;
+        Ok(())
+    }
+
+    /// Called by the Driver orchestrator after computing `BoardConfig::in_notch_band`.
+    /// Stores the flag so `set_mux` can apply it on the next tune.
+    fn apply_notch(&self, in_notch_band: bool) -> Result<()> {
+        *self.in_notch.lock() = in_notch_band;
+        Ok(())
+    }
+
+    fn set_input_path(&self, path: crate::tuner::InputPath) -> Result<()> {
+        use crate::tuner::InputPath::*;
+        match path {
+            Hf => {
+                // HF: Cable 2 active (reg 0x06 bit 3)
+                self.write_reg_mask(0x06, 0x08, 0x08)?;
+                // Disable Cable 1/Air In (reg 0x05 bits 5,6)
+                self.write_reg_mask(0x05, 0x00, 0x60)?;
+            }
+            Vhf => {
+                // VHF: Cable 1 active (reg 0x05 bit 6)
+                self.write_reg_mask(0x05, 0x40, 0x60)?;
+                // Disable Cable 2
+                self.write_reg_mask(0x06, 0x00, 0x08)?;
+            }
+            Uhf => {
+                // UHF: Air In active (reg 0x05 bit 5)
+                self.write_reg_mask(0x05, 0x20, 0x60)?;
+                // Disable Cable 2
+                self.write_reg_mask(0x06, 0x00, 0x08)?;
+            }
+        }
         Ok(())
     }
 }

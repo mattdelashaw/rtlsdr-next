@@ -118,28 +118,63 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
     let s2 = sender_shared.clone();
     let mut audio_task = tokio::spawn(async move {
         while let Ok(data) = audio_rx.recv().await {
-            let mut msg = vec![b'A'];
-            // Convert f32 slice to bytes (native endian)
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    data.as_ptr() as *const u8,
-                    data.len() * std::mem::size_of::<f32>(),
-                )
-            };
-            msg.extend_from_slice(bytes);
+            // Explicit Little-Endian conversion (safe and cross-platform)
+            let mut msg = Vec::with_capacity(1 + data.len() * 4);
+            msg.push(b'A');
+            for &sample in data.iter() {
+                msg.extend_from_slice(&sample.to_le_bytes());
+            }
             if s2.lock().await.send(Message::Binary(msg.into())).await.is_err() { break; }
         }
     });
 
     // Task: Process Commands
     let cmd_driver = state.driver.clone();
+    let s_cmd = sender_shared.clone();
     let mut cmd_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             if let Ok(cmd) = serde_json::from_str::<Command>(&text) {
                 let mut d = cmd_driver.lock().await;
                 match cmd {
-                    Command::SetFrequency { hz } => { let _ = d.set_frequency(hz); }
-                    Command::SetGain { db } => { let _ = d.tuner.set_gain(db); }
+                    Command::SetFrequency { hz } => { 
+                        match d.set_frequency(hz) {
+                            Ok(actual) => {
+                                let reply = serde_json::json!({
+                                    "type": "freqconfirm",
+                                    "requested": hz,
+                                    "actual": actual,
+                                });
+                                let _ = s_cmd.lock().await.send(Message::Text(reply.to_string().into())).await;
+                            }
+                            Err(e) => {
+                                let reply = serde_json::json!({
+                                    "type": "error",
+                                    "cmd": "setfrequency",
+                                    "msg": e.to_string(),
+                                });
+                                let _ = s_cmd.lock().await.send(Message::Text(reply.to_string().into())).await;
+                            }
+                        }
+                    }
+                    Command::SetGain { db } => { 
+                        match d.tuner.set_gain(db) {
+                            Ok(actual) => {
+                                let reply = serde_json::json!({
+                                    "type": "gainconfirm",
+                                    "actual": actual,
+                                });
+                                let _ = s_cmd.lock().await.send(Message::Text(reply.to_string().into())).await;
+                            }
+                            Err(e) => {
+                                let reply = serde_json::json!({
+                                    "type": "error",
+                                    "cmd": "setgain",
+                                    "msg": e.to_string(),
+                                });
+                                let _ = s_cmd.lock().await.send(Message::Text(reply.to_string().into())).await;
+                            }
+                        }
+                    }
                     Command::SetDemod { .. } => { /* TODO: Dynamic switch */ }
                 }
             }

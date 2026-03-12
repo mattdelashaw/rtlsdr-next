@@ -70,6 +70,16 @@
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'hardwareinfo') {
                         status.innerText = `Hardware: ${msg.manufacturer} ${msg.product} (V4: ${msg.is_v4})`;
+                    } else if (msg.type === 'freqconfirm') {
+                        document.getElementById('freq').value = msg.actual;
+                        status.innerText = `Tuned to ${msg.actual.toLocaleString()} Hz`;
+                    } else if (msg.type === 'gainconfirm') {
+                        document.getElementById('gain').value = msg.actual;
+                        status.innerText = `Gain set to ${msg.actual} dB`;
+                    } else if (msg.type === 'error') {
+                        status.innerText = `Error (${msg.cmd}): ${msg.msg}`;
+                        status.style.color = '#ff4444';
+                        setTimeout(() => { status.style.color = '#888'; }, 3000);
                     }
                     return;
                 }

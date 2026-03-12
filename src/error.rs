@@ -30,13 +30,13 @@ pub enum Error {
     #[error("Device not found")]
     NotFound,
 
-    #[error("Internal buffer is empty")]
+    #[error("Buffer accessed after drop")]
     BufferEmpty,
 
-    #[error("Communication channel is full")]
+    #[error("Channel is full")]
     ChannelFull,
 
-    #[error("Communication channel is closed")]
+    #[error("Channel closed unexpectedly")]
     ChannelClosed,
 
     #[error("Mutex poisoned: {0}")]
@@ -45,11 +45,9 @@ pub enum Error {
     #[error("Invalid gain value: {0}")]
     InvalidGain(i32),
 
-    #[error("IO Error")]
-    IoError,
-
-    #[error("Serialization failed")]
-    SerializationFailed,
+    #[error("Hardware command failed: {0}")]
+    HardwareCommand(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+// The following variants are used by stream.rs, r828d.rs, and websdr server.

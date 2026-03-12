@@ -71,10 +71,8 @@ pub fn init_baseband(hw: &dyn HardwareInterface) -> Result<()> {
 pub fn set_tuner_low_if(hw: &dyn HardwareInterface) -> Result<()> {
     // 1. Disable Zero-IF mode
     hw.demod_write_reg(demod::P1_PAGE, 0xb1, 0x1a)?;
-    // 2. Only enable In-phase ADC input
+    // 2. Enable In-phase ADC input (required for Low-IF)
     hw.demod_write_reg(demod::P0_PAGE, 0x08, 0x4d)?;
-    // 3. Enable DAGC (Digital AGC) - V4 needs this for better dynamic range
-    hw.demod_write_reg(demod::P0_PAGE, 0x19, 0x25)?; 
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 use crate::device::{Device, TransportBuffer, HardwareInterface};
-use crate::error::Error;
+use crate::error::{Error, Result};
 use rusb::UsbContext;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -16,30 +16,46 @@ const BUFFER_SIZE: usize = 256 * 1024; // 256KB buffers
 const NUM_BUFFERS: usize = 16;
 
 /// A generic buffer that automatically returns itself to a pool when dropped.
-pub struct PooledBuffer<B> {
+pub struct PooledBuffer<B: Send + 'static> {
     inner: Option<B>,
     pool_tx: Option<mpsc::Sender<B>>,
 }
 
-impl<B> PooledBuffer<B> {
+impl<B: Send + 'static> PooledBuffer<B> {
     pub fn new(buffer: B, pool_tx: Option<mpsc::Sender<B>>) -> Self {
         Self { inner: Some(buffer), pool_tx }
     }
 }
 
-impl<B> Deref for PooledBuffer<B> {
+impl<B: Send + 'static> Deref for PooledBuffer<B> {
     type Target = B;
-    fn deref(&self) -> &Self::Target { self.inner.as_ref().expect("PooledBuffer accessed after drop") }
+    fn deref(&self) -> &Self::Target {
+        // inner is only None after Drop — unreachable in normal use.
+        self.inner.as_ref().expect("PooledBuffer accessed after drop")
+    }
 }
 
-impl<B> DerefMut for PooledBuffer<B> {
-    fn deref_mut(&mut self) -> &mut Self::Target { self.inner.as_mut().expect("PooledBuffer accessed after drop") }
+impl<B: Send + 'static> DerefMut for PooledBuffer<B> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().expect("PooledBuffer accessed after drop")
+    }
 }
 
-impl<B> Drop for PooledBuffer<B> {
+impl<B: Send + 'static> Drop for PooledBuffer<B> {
     fn drop(&mut self) {
-        if let (Some(buffer), Some(tx)) = (self.inner.take(), &self.pool_tx) {
-            let _ = tx.try_send(buffer);
+        if let (Some(buffer), Some(tx)) = (self.inner.take(), self.pool_tx.take()) {
+            // try_send first — succeeds in the normal case with zero overhead.
+            // If the channel is momentarily full, fall back to a blocking send
+            // on a dedicated thread so we never silently drop a buffer and starve
+            // the pool. Losing a buffer = server hangs silently after minutes/hours.
+            if let Err(mpsc::error::TrySendError::Full(buffer)) = tx.try_send(buffer) {
+                std::thread::spawn(move || {
+                    // If the receiver is gone the stream is shutting down — discard.
+                    let _ = tx.blocking_send(buffer);
+                });
+            }
+            // TrySendError::Closed means the stream shut down — buffer is discarded,
+            // which is correct: there's nobody to return it to.
         }
     }
 }
@@ -185,7 +201,7 @@ impl<T: UsbContext + 'static> F32Stream<T> {
         };
         
         // Deref the PooledBuffer to get TransportBuffer, then deref that to get &[u8]
-        let u8_data = &**u8_data_buffer;
+        let u8_data = &*u8_data_buffer;
 
         let mut f32_buf = match self.pool_f32_rx.recv().await {
             Some(b) => b,
@@ -205,8 +221,13 @@ impl<T: UsbContext + 'static> F32Stream<T> {
             };
             dec.process_into(&f32_buf, &mut dec_buf);
             
-            // Return intermediate buffer to pool
-            let _ = self.pool_f32_tx.try_send(f32_buf);
+            // Return intermediate buffer to pool. This runs in an async context
+            // so we can await rather than risk dropping the buffer.
+            if let Err(mpsc::error::TrySendError::Full(buf)) = self.pool_f32_tx.try_send(f32_buf) {
+                // Pool is full — someone is not consuming fast enough. Send async.
+                let tx = self.pool_f32_tx.clone();
+                tokio::spawn(async move { let _ = tx.send(buf).await; });
+            }
             
             Some(Ok(PooledBuffer::new(dec_buf, Some(self.pool_dec_tx.clone()))))
         } else {

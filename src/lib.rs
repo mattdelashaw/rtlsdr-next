@@ -17,16 +17,17 @@ pub mod websdr;
 
 pub use device::{Device, DeviceInfo};
 pub use error::{Error, Result};
-pub use tuner::{Tuner, FilterRange};
+pub use tuner::{Tuner, FilterRange, BoardConfig, InputPath};
 pub use stream::{SampleStream, F32Stream, PooledBuffer};
 pub use server::SharingServer;
 pub use rtl_tcp::TcpServer;
 pub use demod::DEFAULT_SAMPLE_RATE;
 
 pub struct Driver {
-    device:     Arc<Device<rusb::Context>>,
-    pub info:   DeviceInfo,
-    pub tuner:  Box<dyn Tuner>,
+    device:      Arc<Device<rusb::Context>>,
+    pub info:    DeviceInfo,
+    pub tuner:   Box<dyn Tuner>,
+    pub board:   BoardConfig,
     pub sample_rate: u32,
     pub frequency:   u64,
     pub ppm:         i32,
@@ -39,16 +40,20 @@ impl Driver {
         let device = Arc::new(Device::open()?);
         let hw     = device.as_ref();
 
-        // ── 1. RTL2832U baseband init ──
+        // ── 1. RTL2832U baseband init ──────────────────────────────────────
         demod::power_on(hw)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // ── 2. Read strings ──
-        let info = device.read_info();
-        let is_v4 = info.is_v4;
-        log::info!("Found RTL2832U — manufacturer: {:?} product: {:?} is_v4: {}", info.manufacturer, info.product, info.is_v4);
+        // ── 2. Identify board ──────────────────────────────────────────────
+        let info  = device.read_info();
+        let board = if info.is_v4 { BoardConfig::BlogV4 } else { BoardConfig::Generic };
+        log::info!(
+            "Found RTL2832U — manufacturer: {:?} product: {:?} board: {:?}",
+            info.manufacturer, info.product, board
+        );
 
-        if is_v4 {
+        // ── 3. V4 GPIO power-up (board-level, not tuner-level) ────────────
+        if let BoardConfig::BlogV4 = board {
             log::info!("Applying RTL-SDR Blog V4 GPIO power-up sequence...");
             hw.set_gpio_output(4)?;
             hw.set_gpio_output(5)?;
@@ -57,58 +62,137 @@ impl Driver {
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
 
-        // ── 3. Probe and initialize tuner ──
+        // ── 4. Probe and initialize tuner chip ────────────────────────────
         let tuner_type = hw.probe_tuner()?;
-        log::info!("Detected Tuner: {:?}", tuner_type);
+        log::info!("Detected tuner chip: {:?}", tuner_type);
+
+        let xtal_hz: u64 = match board {
+            BoardConfig::BlogV4 => 28_800_000,
+            BoardConfig::Generic => 16_000_000,
+        };
 
         let tuner: Box<dyn Tuner> = match tuner_type {
-            TunerType::R820T | TunerType::R828D => Box::new(tuners::r828d::R828D::new(device.clone(), is_v4)),
-            TunerType::Unknown(_) if is_v4 => Box::new(tuners::r828d::R828D::new(device.clone(), true)),
+            TunerType::R820T | TunerType::R828D => {
+                Box::new(tuners::r828d::R828D::new(device.clone(), xtal_hz))
+            }
+            TunerType::Unknown(_) if info.is_v4 => {
+                Box::new(tuners::r828d::R828D::new(device.clone(), xtal_hz))
+            }
             _ => return Err(Error::UnsupportedTuner(format!("{:?} not yet supported", tuner_type))),
         };
 
         tuner.initialize()?;
 
-        // ── 4. Post-detection demod config for Low-IF ──
-        if matches!(tuner_type, TunerType::R820T | TunerType::R828D) || is_v4 {
+        // ── 5. Post-detection demod config for Low-IF ─────────────────────
+        if matches!(tuner_type, TunerType::R820T | TunerType::R828D) || info.is_v4 {
             demod::set_tuner_low_if(hw)?;
             demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
         }
 
-        // ── 5. Demodulator sync ──
+        // ── 6. Demodulator sync ────────────────────────────────────────────
         let initial_if = 2_300_000u32;
         tuner.set_if_freq(initial_if as u64)?;
-        demod::set_if_freq_xtal(hw, initial_if, 28_800_000)?;
-        demod::set_sample_rate_xtal(hw, DEFAULT_SAMPLE_RATE, 28_800_000)?;
+        
         demod::reset_demod(hw)?;
+        demod::set_if_freq_xtal(hw, initial_if, xtal_hz as u32)?;
+        demod::set_sample_rate_xtal(hw, DEFAULT_SAMPLE_RATE, xtal_hz as u32)?;
+        demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
+        
         demod::start_streaming(hw)?;
 
         log::info!("RTL-SDR driver ready");
-
-        Ok(Self { device, info, tuner, sample_rate: DEFAULT_SAMPLE_RATE, frequency: 0, ppm: 0 })
+        Ok(Self { device, info, tuner, board, sample_rate: DEFAULT_SAMPLE_RATE, frequency: 0, ppm: 0 })
     }
 
     pub fn set_frequency(&mut self, hz: u64) -> Result<u64> {
-        let actual = self.tuner.set_frequency(hz)?;
-        let hw     = self.device.as_ref();
-        let xtal   = self.corrected_xtal_hz();
-        let if_hz  = self.tuner.get_if_freq();
+        // ── Board-level orchestration ──────────────────────────────────────
+        // 1. Handle V4 HF Upconverter (28.8 MHz offset)
+        let mut target_hz = hz;
+        let mut spectral_inv = false;
+        if self.info.is_v4 && hz < 28_800_000 {
+            target_hz += 28_800_000;
+            spectral_inv = true;
+        }
+
+        // 2. Tell the chip driver about the notch state
+        let in_notch = self.board.in_notch_band(hz);
+        if let Err(e) = self.tuner.apply_notch(in_notch) {
+            log::error!("Failed to apply notch filter hint: {:?}", e);
+            return Err(e);
+        }
+
+        // 3. Tell the chip to tune (PLL + MUX)
+        let actual = match self.tuner.set_frequency(target_hz) {
+            Ok(f) => f,
+            Err(e) => {
+                log::error!("Tuner failed to set frequency {} Hz: {:?}", target_hz, e);
+                return Err(e);
+            }
+        };
+
+        // 4. Board-level triplexer switching (V4 only).
+        if let Some(path) = self.board.input_path(hz) {
+            if let Err(e) = self.apply_input_path(hz, path) {
+                log::error!("Failed to apply V4 input path: {:?}", e);
+                return Err(e);
+            }
+        }
+
+        // 5. Sync demodulator IF.
+        // We do NOT reset the demod here; we just update the digital shift.
+        // Resetting here wipes the resampler ratio and stalls the stream.
+        let hw   = self.device.as_ref();
+        let xtal = self.corrected_xtal_hz();
+        let if_hz = self.tuner.get_if_freq();
+        
         demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
-        demod::reset_demod(hw)?;
+        
+        // DDC Sync (0x15): bit 0 = Enable, bit 2 = Invert Spectrum.
+        let sync_val = if spectral_inv { 0x05 } else { 0x01 };
+        demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, sync_val)?;
+
         self.frequency = hz;
-        log::trace!("Setting frequency: {:?}", hz);
+        log::info!("Frequency set to {} Hz (actual: {}, HF_Inv: {})", hz, actual, spectral_inv);
         Ok(actual)
     }
 
+    fn apply_input_path(&self, _freq_hz: u64, path: InputPath) -> Result<()> {
+        let hw = self.device.as_ref();
+        // 1. Physical board-level GPIO switch (GPIO 5 is upconverter power)
+        hw.set_gpio_output(5)?;
+        match path {
+            InputPath::Hf => {
+                log::debug!("V4 input: HF (cable 2, GPIO5 low)");
+                hw.set_gpio_bit(5, false)?;
+            }
+            InputPath::Vhf => {
+                log::debug!("V4 input: VHF (cable 1, GPIO5 high)");
+                hw.set_gpio_bit(5, true)?;
+            }
+            InputPath::Uhf => {
+                log::debug!("V4 input: UHF (air in, GPIO5 high)");
+                hw.set_gpio_bit(5, true)?;
+            }
+        }
+        // 2. Chip-level internal mux (via masked register writes)
+        self.tuner.set_input_path(path)
+    }
+
     pub fn set_sample_rate(&mut self, rate_hz: u32) -> Result<()> {
-        let hw   = self.device.as_ref();
-        let xtal = self.corrected_xtal_hz();
+        let hw    = self.device.as_ref();
+        let xtal  = self.corrected_xtal_hz();
         let if_hz = if rate_hz < 2_500_000 { 2_300_000 } else { 3_570_000 };
+        
         self.tuner.set_if_freq(if_hz)?;
+        
+        // Sample rate reset is heavy — restore everything after.
+        demod::reset_demod(hw)?;
         demod::set_sample_rate_xtal(hw, rate_hz, xtal)?;
         demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
-        demod::reset_demod(hw)?;
+        demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
+
         self.sample_rate = rate_hz;
+        log::info!("Sample rate set to {} Hz", rate_hz);
         Ok(())
     }
 
@@ -136,8 +220,13 @@ impl Driver {
         (nominal + offset) as u32
     }
 
-    pub fn stream(&self) -> SampleStream<rusb::Context> { SampleStream::new(self.device.clone()) }
-    pub fn stream_f32(&self, factor: usize) -> F32Stream<rusb::Context> { F32Stream::new(self.stream(), factor) }
+    pub fn stream(&self) -> SampleStream<rusb::Context> {
+        SampleStream::new(self.device.clone())
+    }
+
+    pub fn stream_f32(&self, factor: usize) -> F32Stream<rusb::Context> {
+        F32Stream::new(self.stream(), factor)
+    }
 
     pub async fn start_sharing<P: AsRef<std::path::Path>>(&self, path: P) -> Result<SharingServer> {
         let mut stream = self.stream();
@@ -146,14 +235,16 @@ impl Driver {
             while let Some(res) = stream.next().await {
                 match res {
                     Ok(samples) => { let _ = tx.send(Arc::new(samples.to_vec())); }
-                    Err(e) => { log::error!("Stream error: {:?}", e); break; }
+                    Err(e)      => { log::error!("Stream error: {:?}", e); break; }
                 }
             }
         });
-        SharingServer::start(path, rx).await.map_err(|e| Error::Tuner(format!("Server error: {:?}", e)))
+        SharingServer::start(path, rx).await
+            .map_err(|e| Error::Tuner(format!("Server error: {:?}", e)))
     }
 
     pub async fn start_rtl_tcp(self, addr: &str) -> Result<TcpServer> {
-        TcpServer::start(self, addr).await.map_err(|e| Error::Tuner(format!("TCP Server error: {:?}", e)))
+        TcpServer::start(self, addr).await
+            .map_err(|e| Error::Tuner(format!("TCP Server error: {:?}", e)))
     }
 }
