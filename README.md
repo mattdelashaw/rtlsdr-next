@@ -48,7 +48,7 @@ Benchmarked on Raspberry Pi 5 (Cortex-A76, aarch64):
 
 | Operation | Throughput |
 |-----------|------------|
-| `u8` → `f32` converter | ~2.7 GiB/s |
+| `u8` → `f32` converter | ~1.49 GiB/s |
 | 33-tap FIR decimator (NEON) | ~670 MSa/s |
 | CPU usage at 2.048 MSPS | < 6% |
 
