@@ -1,5 +1,7 @@
 # rtlsdr-next 📡
 
+![Descriptive alt text for the image](assets/images/banner.webp)
+
 A high-performance, asynchronous, and safety-first Rust driver for RTL2832U-based Software Defined Radios (SDR).
 
 Designed for the modern era (2026+), this driver moves away from the legacy C callback model toward a **Tokio-native Stream** architecture, with specific optimizations for high-bandwidth ARM hosts like the **Raspberry Pi 5**.
