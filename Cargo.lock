@@ -994,6 +994,7 @@ dependencies = [
  "libc",
  "libusb1-sys",
  "log",
+ "parking_lot",
  "rusb",
  "rustfft",
  "serde",
