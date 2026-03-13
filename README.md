@@ -210,7 +210,7 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 
 -*Note: The performance gain in conversion is primarily due to moving from cache-latency-bound lookup tables to instruction-parallel arithmetic, which better utilizes modern out-of-order CPU pipelines.*
 
-## 🗺 Roadmap
+## 🗺 Roadmap - Phaseshifting
 
 - [x] **Phase 1: Hardware Bridge** — USB vendor requests, I2C bridge, control transfer encoding
 - [x] **Phase 2: R828D / V4 Support** — Full tuner initialization, PLL, gain tables
@@ -229,7 +229,7 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 ### Tuner Datasheets and Drivers
 
 **Another Rust Implementation**
-- [RTL-SDR-RS](https://github.com/ccostes/rtl-sdr-rs)
+- [RTL-SDR-RS](https://github.com/ccostes/rtl-sdr-rs) - probably human driven project
 
 **Rafael Micro R820T / R820T2 / R828D**
 - [R820T Datasheet (leaked draft)](https://github.com/josebury/R820T-Datasheet/blob/master/R820T_Datasheet-Non_Disclosure_Working_Draft.pdf) — gold standard for register maps
