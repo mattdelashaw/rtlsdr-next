@@ -25,6 +25,7 @@ enum Command {
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[allow(dead_code)]
 enum WebEvent {
     HardwareInfo { manufacturer: String, product: String, is_v4: bool },
     FrequencyChange { hz: u64 },

@@ -1,5 +1,5 @@
 use crate::device::{Device, TransportBuffer, HardwareInterface};
-use crate::error::{Error, Result};
+use crate::error::Error;
 use rusb::UsbContext;
 use std::sync::Arc;
 use tokio::sync::mpsc;

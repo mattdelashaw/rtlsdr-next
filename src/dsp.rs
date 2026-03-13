@@ -237,7 +237,7 @@ unsafe fn fir_decimate_neon(
         let win_ptr  = unsafe { extended.as_ptr().add(i) };
         let taps_ptr = taps.as_ptr();
 
-        let mut v_acc = unsafe { vdupq_n_f32(0.0) };
+        let mut v_acc = vdupq_n_f32(0.0);
         let mut j     = 0usize;
 
         // ── 4-wide FMA loop ──────────────────────────────────────────────
@@ -255,7 +255,7 @@ unsafe fn fir_decimate_neon(
         }
 
         // ── Horizontal sum of 4 lanes ────────────────────────────────────
-        let mut acc = unsafe { vaddvq_f32(v_acc) };
+        let mut acc = vaddvq_f32(v_acc);
 
         // ── Scalar tail (0..3 remaining taps) ───────────────────────────
         while j < taps_len {

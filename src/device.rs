@@ -219,7 +219,7 @@ impl Device<Context> {
 #[derive(Clone, Debug)]
 pub struct DeviceInfo { pub manufacturer: String, pub product: String, pub is_v4: bool }
 impl DeviceInfo {
-    fn probe<T: UsbContext>(handle: &DeviceHandle<T>) -> Self {
+    pub fn probe<T: UsbContext>(handle: &DeviceHandle<T>) -> Self {
         let mut info = Self { manufacturer: String::new(), product: String::new(), is_v4: false };
         if let Ok(desc) = handle.device().device_descriptor() {
             if let Ok(m) = handle.read_manufacturer_string_ascii(&desc) { info.manufacturer = m; }
@@ -237,9 +237,24 @@ impl<T: UsbContext> TransportBuffer<T> {
 impl<T: UsbContext> std::ops::Deref for TransportBuffer<T> { type Target = [u8]; fn deref(&self) -> &[u8] { &self.data } }
 impl<T: UsbContext> std::ops::DerefMut for TransportBuffer<T> { fn deref_mut(&mut self) -> &mut [u8] { &mut self.data } }
 
-fn bit_reverse(mut b: u8) -> u8 {
-    b = (b & 0xf0) >> 4 | (b & 0x0f) << 4;
-    b = (b & 0xcc) >> 2 | (b & 0x33) << 2;
-    b = (b & 0xaa) >> 1 | (b & 0x55) << 1;
-    b
+#[cfg(test)]
+pub struct MockHardware;
+#[cfg(test)]
+impl HardwareInterface for MockHardware {
+    fn write_reg(&self, _: u16, _: u16, _: u8) -> Result<()> { Ok(()) }
+    fn write_reg16(&self, _: u16, _: u16, _: u16) -> Result<()> { Ok(()) }
+    fn read_reg(&self, _: u16, _: u16) -> Result<u8> { Ok(0) }
+    fn demod_write_reg(&self, _: u8, _: u16, _: u8) -> Result<()> { Ok(()) }
+    fn demod_write_reg16(&self, _: u8, _: u16, _: u16) -> Result<()> { Ok(()) }
+    fn demod_read_reg(&self, _: u8, _: u16) -> Result<u8> { Ok(0) }
+    fn set_i2c_repeater(&self, _: bool) -> Result<()> { Ok(()) }
+    fn i2c_write_raw(&self, _: u8, _: &[u8]) -> Result<()> { Ok(()) }
+    fn i2c_read_raw(&self, _: u8, _: usize) -> Result<Vec<u8>> { Ok(vec![0]) }
+    fn i2c_write_tuner(&self, _: u8, _: u8, _: &[u8]) -> Result<()> { Ok(()) }
+    fn i2c_read_tuner(&self, _: u8, _: u8, _: usize) -> Result<Vec<u8>> { Ok(vec![0]) }
+    fn i2c_read_direct(&self, _: u8, _: usize) -> Result<Vec<u8>> { Ok(vec![0]) }
+    fn read_bulk(&self, _: u8, _: &mut [u8], _: Duration) -> Result<usize> { Ok(0) }
+    fn set_gpio_output(&self, _: u8) -> Result<()> { Ok(()) }
+    fn set_gpio_bit(&self, _: u8, _: bool) -> Result<()> { Ok(()) }
+    fn probe_tuner(&self) -> Result<TunerType> { Ok(TunerType::R828D) }
 }

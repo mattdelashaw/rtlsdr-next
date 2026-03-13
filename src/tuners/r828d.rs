@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use log::{warn, debug};
+use log::warn;
 
 const I2C_ADDR:         u8    = 0x74;
 const NUM_REGS:         usize = 27;
@@ -20,7 +20,6 @@ const REG_SHADOW_START: u8    = 0x05;
 const VCO_MIN: u64 = 1_770_000_000;
 const VCO_MAX: u64 = 3_600_000_000;
 
-const IF_FREQ_WIDE:   u64 = 3_570_000;
 const IF_FREQ_NARROW: u64 = 2_300_000;
 
 const GAIN_STEPS: [i32; 29] = [
