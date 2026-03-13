@@ -15,11 +15,21 @@ pub struct FilterRange {
     pub end_hz: u64,
 }
 
-/// Board-level configuration injected into the `Driver` orchestrator.
-/// The tuner chip itself (`R828D`, `R820T`, etc.) never sees this — it stays
-/// as a pure chip driver. The `Driver` uses `BoardConfig` to decide which
-/// GPIO and notch-filter operations to perform after the chip is tuned.
-#[derive(Debug, Clone)]
+/// A calculated plan for tuning to a specific frequency on a specific board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TuningPlan {
+    /// The actual frequency to request from the tuner chip.
+    pub tuner_hz: u64,
+    /// Whether the spectrum needs to be inverted (e.g., for V4 HF path).
+    pub spectral_inv: bool,
+    /// The triplexer input path to select (if any).
+    pub input_path: Option<InputPath>,
+    /// Whether the frequency falls within a board-level notch filter band.
+    pub in_notch: bool,
+}
+
+/// Board-level configuration and logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoardConfig {
     /// Generic RTL-SDR dongle — no special GPIO or triplexer logic.
     Generic,
@@ -28,40 +38,114 @@ pub enum BoardConfig {
     BlogV4,
 }
 
-impl BoardConfig {
-    /// Returns true if the given frequency falls within a notch-filtered band
-    /// on this board. Used by the orchestrator to set `open_d` in `set_mux`.
-    pub fn in_notch_band(&self, freq_hz: u64) -> bool {
-        match self {
-            BoardConfig::Generic => false,
-            BoardConfig::BlogV4 => {
-                freq_hz <= 2_200_000
-                    || (85_000_000..=112_000_000).contains(&freq_hz)
-                    || (172_000_000..=242_000_000).contains(&freq_hz)
-            }
-        }
-    }
+pub trait BoardOrchestrator: Send + Sync {
+    /// Calculate the tuning plan for a requested frequency.
+    fn plan_tuning(&self, hz: u64) -> TuningPlan;
+}
 
-    /// Which triplexer input path to select on the V4, returned as
-    /// `(gpio5_high, cable2_active, cable1_active, air_in_active)`.
-    /// Returns `None` for Generic boards (no GPIO needed).
-    pub fn input_path(&self, freq_hz: u64) -> Option<InputPath> {
-        match self {
-            BoardConfig::Generic => None,
-            BoardConfig::BlogV4 => {
-                if freq_hz < 28_800_000 {
-                    Some(InputPath::Hf) // HF: cable 2, GPIO5 low
-                } else if freq_hz < 250_000_000 {
-                    Some(InputPath::Vhf) // VHF: cable 1, GPIO5 high
-                } else {
-                    Some(InputPath::Uhf) // UHF: air in, GPIO5 high
-                }
-            }
+pub struct GenericOrchestrator;
+impl BoardOrchestrator for GenericOrchestrator {
+    fn plan_tuning(&self, hz: u64) -> TuningPlan {
+        TuningPlan {
+            tuner_hz: hz,
+            spectral_inv: false,
+            input_path: None,
+            in_notch: false,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+pub struct V4Orchestrator;
+impl BoardOrchestrator for V4Orchestrator {
+    fn plan_tuning(&self, hz: u64) -> TuningPlan {
+        let mut tuner_hz = hz;
+        let mut spectral_inv = false;
+
+        // V4 HF Upconverter (28.8 MHz offset)
+        if hz < 28_800_000 {
+            tuner_hz += 28_800_000;
+            spectral_inv = true;
+        }
+
+        let input_path = if hz < 28_800_000 {
+            Some(InputPath::Hf) // HF: cable 2, GPIO5 low
+        } else if hz < 250_000_000 {
+            Some(InputPath::Vhf) // VHF: cable 1, GPIO5 high
+        } else {
+            Some(InputPath::Uhf) // UHF: air in, GPIO5 high
+        };
+
+        let in_notch = hz <= 2_200_000
+            || (85_000_000..=112_000_000).contains(&hz)
+            || (172_000_000..=242_000_000).contains(&hz);
+
+        TuningPlan {
+            tuner_hz,
+            spectral_inv,
+            input_path,
+            in_notch,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_v4_orchestrator_hf() {
+        let orch = V4Orchestrator;
+        // 7 MHz HF
+        let plan = orch.plan_tuning(7_000_000);
+        assert_eq!(plan.tuner_hz, 35_800_000);
+        assert!(plan.spectral_inv);
+        assert_eq!(plan.input_path, Some(InputPath::Hf));
+        assert!(plan.in_notch); // 7 MHz is outside AM notch but in_notch handles <= 2.2MHz
+    }
+
+    #[test]
+    fn test_v4_orchestrator_vhf() {
+        let orch = V4Orchestrator;
+        // 100 MHz FM
+        let plan = orch.plan_tuning(100_000_000);
+        assert_eq!(plan.tuner_hz, 100_000_000);
+        assert!(!plan.spectral_inv);
+        assert_eq!(plan.input_path, Some(InputPath::Vhf));
+        assert!(plan.in_notch); // 100 MHz is in FM notch band
+    }
+
+    #[test]
+    fn test_v4_orchestrator_uhf() {
+        let orch = V4Orchestrator;
+        // 900 MHz UHF
+        let plan = orch.plan_tuning(900_000_000);
+        assert_eq!(plan.tuner_hz, 900_000_000);
+        assert!(!plan.spectral_inv);
+        assert_eq!(plan.input_path, Some(InputPath::Uhf));
+        assert!(!plan.in_notch);
+    }
+
+    #[test]
+    fn test_generic_orchestrator() {
+        let orch = GenericOrchestrator;
+        let plan = orch.plan_tuning(100_000_000);
+        assert_eq!(plan.tuner_hz, 100_000_000);
+        assert!(!plan.spectral_inv);
+        assert_eq!(plan.input_path, None);
+        assert!(!plan.in_notch);
+    }
+}
+
+impl BoardConfig {
+    pub fn orchestrator(&self) -> Box<dyn BoardOrchestrator> {
+        match self {
+            BoardConfig::Generic => Box::new(GenericOrchestrator),
+            BoardConfig::BlogV4 => Box::new(V4Orchestrator),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputPath {
     Hf,
     Vhf,

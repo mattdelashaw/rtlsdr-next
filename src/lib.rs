@@ -27,12 +27,13 @@ pub struct Driver {
     device: Arc<Device<rusb::Context>>,
     pub info: DeviceInfo,
     pub tuner: Box<dyn Tuner>,
-    pub board: BoardConfig,
+    pub orchestrator: Box<dyn BoardOrchestrator>,
     pub sample_rate: u32,
     pub frequency: u64,
     pub ppm: i32,
 }
 
+use tuner::BoardOrchestrator;
 use tuner::TunerType;
 
 impl Driver {
@@ -51,6 +52,8 @@ impl Driver {
         } else {
             BoardConfig::Generic
         };
+        let orchestrator = board.orchestrator();
+
         log::info!(
             "Found RTL2832U — manufacturer: {:?} product: {:?} board: {:?}",
             info.manufacturer,
@@ -116,7 +119,7 @@ impl Driver {
             device,
             info,
             tuner,
-            board,
+            orchestrator,
             sample_rate: DEFAULT_SAMPLE_RATE,
             frequency: 0,
             ppm: 0,
@@ -124,42 +127,37 @@ impl Driver {
     }
 
     pub fn set_frequency(&mut self, hz: u64) -> Result<u64> {
-        // ── Board-level orchestration ──────────────────────────────────────
-        // 1. Handle V4 HF Upconverter (28.8 MHz offset)
-        let mut target_hz = hz;
-        let mut spectral_inv = false;
-        if self.info.is_v4 && hz < 28_800_000 {
-            target_hz += 28_800_000;
-            spectral_inv = true;
-        }
+        // 1. Calculate the tuning plan
+        let plan = self.orchestrator.plan_tuning(hz);
 
         // 2. Tell the chip driver about the notch state
-        let in_notch = self.board.in_notch_band(hz);
-        if let Err(e) = self.tuner.apply_notch(in_notch) {
+        if let Err(e) = self.tuner.apply_notch(plan.in_notch) {
             log::error!("Failed to apply notch filter hint: {:?}", e);
             return Err(e);
         }
 
         // 3. Tell the chip to tune (PLL + MUX)
-        let actual = match self.tuner.set_frequency(target_hz) {
+        let actual = match self.tuner.set_frequency(plan.tuner_hz) {
             Ok(f) => f,
             Err(e) => {
-                log::error!("Tuner failed to set frequency {} Hz: {:?}", target_hz, e);
+                log::error!(
+                    "Tuner failed to set frequency {} Hz: {:?}",
+                    plan.tuner_hz,
+                    e
+                );
                 return Err(e);
             }
         };
 
-        // 4. Board-level triplexer switching (V4 only).
-        if let Some(path) = self.board.input_path(hz)
+        // 4. Board-level triplexer switching (if applicable).
+        if let Some(path) = plan.input_path
             && let Err(e) = self.apply_input_path(hz, path)
         {
-            log::error!("Failed to apply V4 input path: {:?}", e);
+            log::error!("Failed to apply input path: {:?}", e);
             return Err(e);
         }
 
         // 5. Sync demodulator IF.
-        // We do NOT reset the demod here; we just update the digital shift.
-        // Resetting here wipes the resampler ratio and stalls the stream.
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
         let if_hz = self.tuner.get_if_freq();
@@ -167,7 +165,7 @@ impl Driver {
         demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
 
         // DDC Sync (0x15): bit 0 = Enable, bit 2 = Invert Spectrum.
-        let sync_val = if spectral_inv { 0x05 } else { 0x01 };
+        let sync_val = if plan.spectral_inv { 0x05 } else { 0x01 };
         demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, sync_val)?;
 
         self.frequency = hz;
@@ -175,7 +173,7 @@ impl Driver {
             "Frequency set to {} Hz (actual: {}, HF_Inv: {})",
             hz,
             actual,
-            spectral_inv
+            plan.spectral_inv
         );
         Ok(actual)
     }
