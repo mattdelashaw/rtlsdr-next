@@ -1,36 +1,36 @@
 use std::sync::Arc;
 
-pub mod device;
 pub mod demod;
+pub mod device;
 
 use device::HardwareInterface;
-pub mod error;
-pub mod registers;
-pub mod tuner;
-pub mod tuners;
-pub mod stream;
 pub mod converter;
 pub mod dsp;
-pub mod server;
+pub mod error;
+pub mod registers;
 pub mod rtl_tcp;
+pub mod server;
+pub mod stream;
+pub mod tuner;
+pub mod tuners;
 pub mod websdr;
 
+pub use demod::DEFAULT_SAMPLE_RATE;
 pub use device::{Device, DeviceInfo};
 pub use error::{Error, Result};
-pub use tuner::{Tuner, FilterRange, BoardConfig, InputPath};
-pub use stream::{SampleStream, F32Stream, PooledBuffer};
-pub use server::SharingServer;
 pub use rtl_tcp::TcpServer;
-pub use demod::DEFAULT_SAMPLE_RATE;
+pub use server::SharingServer;
+pub use stream::{F32Stream, PooledBuffer, SampleStream};
+pub use tuner::{BoardConfig, FilterRange, InputPath, Tuner};
 
 pub struct Driver {
-    device:      Arc<Device<rusb::Context>>,
-    pub info:    DeviceInfo,
-    pub tuner:   Box<dyn Tuner>,
-    pub board:   BoardConfig,
+    device: Arc<Device<rusb::Context>>,
+    pub info: DeviceInfo,
+    pub tuner: Box<dyn Tuner>,
+    pub board: BoardConfig,
     pub sample_rate: u32,
-    pub frequency:   u64,
-    pub ppm:         i32,
+    pub frequency: u64,
+    pub ppm: i32,
 }
 
 use tuner::TunerType;
@@ -38,18 +38,24 @@ use tuner::TunerType;
 impl Driver {
     pub fn new() -> Result<Self> {
         let device = Arc::new(Device::open()?);
-        let hw     = device.as_ref();
+        let hw = device.as_ref();
 
         // ── 1. RTL2832U baseband init ──────────────────────────────────────
         demod::power_on(hw)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // ── 2. Identify board ──────────────────────────────────────────────
-        let info  = device.read_info();
-        let board = if info.is_v4 { BoardConfig::BlogV4 } else { BoardConfig::Generic };
+        let info = device.read_info();
+        let board = if info.is_v4 {
+            BoardConfig::BlogV4
+        } else {
+            BoardConfig::Generic
+        };
         log::info!(
             "Found RTL2832U — manufacturer: {:?} product: {:?} board: {:?}",
-            info.manufacturer, info.product, board
+            info.manufacturer,
+            info.product,
+            board
         );
 
         // ── 3. V4 GPIO power-up (board-level, not tuner-level) ────────────
@@ -78,7 +84,12 @@ impl Driver {
             TunerType::Unknown(_) if info.is_v4 => {
                 Box::new(tuners::r828d::R828D::new(device.clone(), xtal_hz))
             }
-            _ => return Err(Error::UnsupportedTuner(format!("{:?} not yet supported", tuner_type))),
+            _ => {
+                return Err(Error::UnsupportedTuner(format!(
+                    "{:?} not yet supported",
+                    tuner_type
+                )));
+            }
         };
 
         tuner.initialize()?;
@@ -92,16 +103,24 @@ impl Driver {
         // ── 6. Demodulator sync ────────────────────────────────────────────
         let initial_if = 2_300_000u32;
         tuner.set_if_freq(initial_if as u64)?;
-        
+
         demod::reset_demod(hw)?;
         demod::set_if_freq_xtal(hw, initial_if, xtal_hz as u32)?;
         demod::set_sample_rate_xtal(hw, DEFAULT_SAMPLE_RATE, xtal_hz as u32)?;
         demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
-        
+
         demod::start_streaming(hw)?;
 
         log::info!("RTL-SDR driver ready");
-        Ok(Self { device, info, tuner, board, sample_rate: DEFAULT_SAMPLE_RATE, frequency: 0, ppm: 0 })
+        Ok(Self {
+            device,
+            info,
+            tuner,
+            board,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+            frequency: 0,
+            ppm: 0,
+        })
     }
 
     pub fn set_frequency(&mut self, hz: u64) -> Result<u64> {
@@ -141,18 +160,23 @@ impl Driver {
         // 5. Sync demodulator IF.
         // We do NOT reset the demod here; we just update the digital shift.
         // Resetting here wipes the resampler ratio and stalls the stream.
-        let hw   = self.device.as_ref();
+        let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
         let if_hz = self.tuner.get_if_freq();
-        
+
         demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
-        
+
         // DDC Sync (0x15): bit 0 = Enable, bit 2 = Invert Spectrum.
         let sync_val = if spectral_inv { 0x05 } else { 0x01 };
         demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, sync_val)?;
 
         self.frequency = hz;
-        log::info!("Frequency set to {} Hz (actual: {}, HF_Inv: {})", hz, actual, spectral_inv);
+        log::info!(
+            "Frequency set to {} Hz (actual: {}, HF_Inv: {})",
+            hz,
+            actual,
+            spectral_inv
+        );
         Ok(actual)
     }
 
@@ -179,12 +203,16 @@ impl Driver {
     }
 
     pub fn set_sample_rate(&mut self, rate_hz: u32) -> Result<()> {
-        let hw    = self.device.as_ref();
-        let xtal  = self.corrected_xtal_hz();
-        let if_hz = if rate_hz < 2_500_000 { 2_300_000 } else { 3_570_000 };
-        
+        let hw = self.device.as_ref();
+        let xtal = self.corrected_xtal_hz();
+        let if_hz = if rate_hz < 2_500_000 {
+            2_300_000
+        } else {
+            3_570_000
+        };
+
         self.tuner.set_if_freq(if_hz)?;
-        
+
         // Sample rate reset is heavy — restore everything after.
         demod::reset_demod(hw)?;
         demod::set_sample_rate_xtal(hw, rate_hz, xtal)?;
@@ -201,7 +229,9 @@ impl Driver {
         self.tuner.set_ppm(ppm)?;
         let freq = self.frequency;
         let rate = self.sample_rate;
-        if freq > 0 { let _ = self.set_frequency(freq); }
+        if freq > 0 {
+            let _ = self.set_frequency(freq);
+        }
         let _ = self.set_sample_rate(rate);
         Ok(())
     }
@@ -216,7 +246,7 @@ impl Driver {
 
     fn corrected_xtal_hz(&self) -> u32 {
         let nominal = 28_800_000i64;
-        let offset  = (nominal * self.ppm as i64) / 1_000_000;
+        let offset = (nominal * self.ppm as i64) / 1_000_000;
         (nominal + offset) as u32
     }
 
@@ -230,21 +260,28 @@ impl Driver {
 
     pub async fn start_sharing<P: AsRef<std::path::Path>>(&self, path: P) -> Result<SharingServer> {
         let mut stream = self.stream();
-        let (tx, rx)   = tokio::sync::broadcast::channel::<Arc<Vec<u8>>>(16);
+        let (tx, rx) = tokio::sync::broadcast::channel::<Arc<Vec<u8>>>(16);
         tokio::spawn(async move {
             while let Some(res) = stream.next().await {
                 match res {
-                    Ok(samples) => { let _ = tx.send(Arc::new(samples.to_vec())); }
-                    Err(e)      => { log::error!("Stream error: {:?}", e); break; }
+                    Ok(samples) => {
+                        let _ = tx.send(Arc::new(samples.to_vec()));
+                    }
+                    Err(e) => {
+                        log::error!("Stream error: {:?}", e);
+                        break;
+                    }
                 }
             }
         });
-        SharingServer::start(path, rx).await
+        SharingServer::start(path, rx)
+            .await
             .map_err(|e| Error::Tuner(format!("Server error: {:?}", e)))
     }
 
     pub async fn start_rtl_tcp(self, addr: &str) -> Result<TcpServer> {
-        TcpServer::start(self, addr).await
+        TcpServer::start(self, addr)
+            .await
             .map_err(|e| Error::Tuner(format!("TCP Server error: {:?}", e)))
     }
 }

@@ -2,23 +2,24 @@
 
 use crate::device::HardwareInterface;
 use crate::error::Result;
-use crate::registers::{block, usb, sys, demod};
+use crate::registers::{block, demod, sys, usb};
 use log::debug;
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 2_048_000;
 
 const FIR_DEFAULT: [i32; 16] = [
-    -54, -36, -41, -40, -32, -14, 14, 53,
-    101, 156, 215, 273, 327, 372, 404, 421,
+    -54, -36, -41, -40, -32, -14, 14, 53, 101, 156, 215, 273, 327, 372, 404, 421,
 ];
 
 fn pack_fir() -> [u8; 20] {
     let mut fir = [0u8; 20];
-    for i in 0..8 { fir[i] = FIR_DEFAULT[i] as i8 as u8; }
+    for i in 0..8 {
+        fir[i] = FIR_DEFAULT[i] as i8 as u8;
+    }
     for i in (0..8).step_by(2) {
         let val0 = FIR_DEFAULT[8 + i];
         let val1 = FIR_DEFAULT[8 + i + 1];
-        fir[8 + i * 3 / 2]     = (val0 >> 4) as u8;
+        fir[8 + i * 3 / 2] = (val0 >> 4) as u8;
         fir[8 + i * 3 / 2 + 1] = (((val0 & 0x0f) << 4) | ((val1 >> 8) & 0x0f)) as u8;
         fir[8 + i * 3 / 2 + 2] = (val1 & 0xff) as u8;
     }
@@ -44,13 +45,23 @@ pub fn init_baseband(hw: &dyn HardwareInterface) -> Result<()> {
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    hw.demod_write_reg(demod::P1_PAGE, demod::P1_SOFT_RESET, demod::P1_SOFT_RESET_ON)?;
-    hw.demod_write_reg(demod::P1_PAGE, demod::P1_SOFT_RESET, demod::P1_SOFT_RESET_OFF)?;
+    hw.demod_write_reg(
+        demod::P1_PAGE,
+        demod::P1_SOFT_RESET,
+        demod::P1_SOFT_RESET_ON,
+    )?;
+    hw.demod_write_reg(
+        demod::P1_PAGE,
+        demod::P1_SOFT_RESET,
+        demod::P1_SOFT_RESET_OFF,
+    )?;
 
     hw.demod_write_reg(demod::P1_PAGE, 0x15, 0x00)?;
     hw.demod_write_reg16(demod::P1_PAGE, 0x16, 0x0000)?;
 
-    for i in 0..6u16 { hw.demod_write_reg(demod::P1_PAGE, 0x16 + i, 0x00)?; }
+    for i in 0..6u16 {
+        hw.demod_write_reg(demod::P1_PAGE, 0x16 + i, 0x00)?;
+    }
 
     set_fir(hw)?;
 
@@ -76,10 +87,20 @@ pub fn set_tuner_low_if(hw: &dyn HardwareInterface) -> Result<()> {
     Ok(())
 }
 
-pub fn power_on(hw: &dyn HardwareInterface) -> Result<()> { init_baseband(hw) }
+pub fn power_on(hw: &dyn HardwareInterface) -> Result<()> {
+    init_baseband(hw)
+}
 pub fn reset_demod(hw: &dyn HardwareInterface) -> Result<()> {
-    hw.demod_write_reg(demod::P1_PAGE, demod::P1_SOFT_RESET, demod::P1_SOFT_RESET_ON)?;
-    hw.demod_write_reg(demod::P1_PAGE, demod::P1_SOFT_RESET, demod::P1_SOFT_RESET_OFF)?;
+    hw.demod_write_reg(
+        demod::P1_PAGE,
+        demod::P1_SOFT_RESET,
+        demod::P1_SOFT_RESET_ON,
+    )?;
+    hw.demod_write_reg(
+        demod::P1_PAGE,
+        demod::P1_SOFT_RESET,
+        demod::P1_SOFT_RESET_OFF,
+    )?;
     Ok(())
 }
 
@@ -91,9 +112,12 @@ pub fn set_if_freq_xtal(hw: &dyn HardwareInterface, if_hz: u32, xtal_hz: u32) ->
     let if_freq = ((if_hz as i64 * (1i64 << 22)) / xtal_hz as i64) * (-1);
     let val = (if_freq & 0x3fffff) as u32;
     hw.demod_write_reg(demod::P1_PAGE, 0x19, ((val >> 16) & 0x3f) as u8)?;
-    hw.demod_write_reg(demod::P1_PAGE, 0x1a, ((val >> 8)  & 0xff) as u8)?;
-    hw.demod_write_reg(demod::P1_PAGE, 0x1b, ( val        & 0xff) as u8)?;
-    debug!("IF freq {}Hz (xtal {}Hz) if_freq_reg={}", if_hz, xtal_hz, if_freq);
+    hw.demod_write_reg(demod::P1_PAGE, 0x1a, ((val >> 8) & 0xff) as u8)?;
+    hw.demod_write_reg(demod::P1_PAGE, 0x1b, (val & 0xff) as u8)?;
+    debug!(
+        "IF freq {}Hz (xtal {}Hz) if_freq_reg={}",
+        if_hz, xtal_hz, if_freq
+    );
     Ok(())
 }
 

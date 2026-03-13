@@ -100,7 +100,13 @@ mod tests {
         let mut output = vec![0.0f32; input.len()];
         ScalarConverter.convert(input, &mut output);
         for (i, (&a, &e)) in output.iter().zip(expected.iter()).enumerate() {
-            assert!((a - e).abs() < EPS, "at index {}: got {}, expected {}", i, a, e);
+            assert!(
+                (a - e).abs() < EPS,
+                "at index {}: got {}, expected {}",
+                i,
+                a,
+                e
+            );
         }
     }
 
@@ -143,7 +149,13 @@ mod tests {
         let mut output = vec![0.0f32; input.len()];
         convert_inverted(&input, &mut output);
         for (i, (&a, &e)) in output.iter().zip(expected.iter()).enumerate() {
-            assert!((a - e).abs() < EPS, "inverted[{}]: got {}, expected {}", i, a, e);
+            assert!(
+                (a - e).abs() < EPS,
+                "inverted[{}]: got {}, expected {}",
+                i,
+                a,
+                e
+            );
         }
     }
 }

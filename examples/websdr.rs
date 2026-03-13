@@ -8,7 +8,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. Open device
     let driver = Driver::new()?;
-    
+
     // 2. Start the WebSDR backend on all interfaces, port 8080
     WebSdrServer::start(driver, "0.0.0.0:8080").await?;
 

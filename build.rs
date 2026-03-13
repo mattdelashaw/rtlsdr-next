@@ -6,7 +6,7 @@ fn main() {
         cc::Build::new()
             .file("benches/librtlsdr_v4.c")
             .compile("librtlsdr_v4");
-        
+
         // Re-run the build ONLY if the C source changes
         println!("cargo:rerun-if-changed=benches/librtlsdr_v4.c");
     }

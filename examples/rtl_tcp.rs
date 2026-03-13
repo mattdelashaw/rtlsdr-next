@@ -1,5 +1,5 @@
-use rtlsdr_next::Driver;
 use log::info;
+use rtlsdr_next::Driver;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,7 +17,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    info!("Hardware: {} (V4: {})", driver.info.product, driver.info.is_v4);
+    info!(
+        "Hardware: {} (V4: {})",
+        driver.info.product, driver.info.is_v4
+    );
 
     // 2. Start the rtl_tcp server on port 1234
     // Standard rtl_tcp port is 1234. Listening on 0.0.0.0 makes it accessible from other machines.
@@ -29,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 3. Keep the server running until Ctrl+C
     tokio::signal::ctrl_c().await?;
-    
+
     info!("Shutting down server...");
     server.stop();
 

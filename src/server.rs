@@ -1,11 +1,11 @@
-use tokio::net::UnixListener;
-use tokio::io::{AsyncWriteExt, Result as IoResult};
-use tokio::sync::broadcast;
-use std::sync::Arc;
+use log::error;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::io::{AsyncWriteExt, Result as IoResult};
+use tokio::net::UnixListener;
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use log::error;
 
 pub struct SharingServer {
     _broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
@@ -17,19 +17,19 @@ impl SharingServer {
     /// Start a new sharing server on the specified Unix Domain Socket path.
     pub async fn start<P: AsRef<Path>>(
         path: P,
-        mut sample_rx: broadcast::Receiver<Arc<Vec<u8>>>
+        mut sample_rx: broadcast::Receiver<Arc<Vec<u8>>>,
     ) -> IoResult<Self> {
         let path = path.as_ref().to_owned();
         let cancel_token = CancellationToken::new();
         let cancel_clone = cancel_token.clone();
-        
+
         // Clean up existing socket file if it exists
         if path.exists() {
             let _ = std::fs::remove_file(&path);
         }
 
         let listener = UnixListener::bind(&path)?;
-        let (tx, _rx) = broadcast::channel::<Arc<Vec<u8>>>(16); 
+        let (tx, _rx) = broadcast::channel::<Arc<Vec<u8>>>(16);
         let tx_clone = tx.clone();
 
         // Task 1: Accept connections and pipe the broadcast to them

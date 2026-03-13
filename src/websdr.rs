@@ -1,17 +1,17 @@
+use crate::Driver;
+use crate::dsp::{Decimator, FmDemodulator};
 use axum::{
+    Router,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
-    Router,
 };
-use tokio::sync::{broadcast, Mutex};
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use crate::Driver;
-use crate::dsp::{FmDemodulator, Decimator};
+use futures_util::{SinkExt, StreamExt};
+use log::{error, info};
 use rustfft::{FftPlanner, num_complex::Complex};
-use log::{info, error};
-use futures_util::{StreamExt, SinkExt};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::{Mutex, broadcast};
 
 // ── WebSocket Protocol ──────────────────────────────────────────────────────
 
@@ -27,9 +27,17 @@ enum Command {
 #[serde(tag = "type", rename_all = "lowercase")]
 #[allow(dead_code)]
 enum WebEvent {
-    HardwareInfo { manufacturer: String, product: String, is_v4: bool },
-    FrequencyChange { hz: u64 },
-    GainChange { db: f32 },
+    HardwareInfo {
+        manufacturer: String,
+        product: String,
+        is_v4: bool,
+    },
+    FrequencyChange {
+        hz: u64,
+    },
+    GainChange {
+        db: f32,
+    },
 }
 
 // ── Server State ─────────────────────────────────────────────────────────────
@@ -37,21 +45,21 @@ enum WebEvent {
 pub struct WebSdrServer {
     driver: Arc<Mutex<Driver>>,
     waterfall_tx: broadcast::Sender<Vec<u8>>, // magnitude bytes (0-255)
-    audio_tx:     broadcast::Sender<Vec<f32>>, // f32 audio samples
+    audio_tx: broadcast::Sender<Vec<f32>>,    // f32 audio samples
 }
 
 impl WebSdrServer {
     pub async fn start(driver: Driver, addr: &str) -> anyhow::Result<()> {
         let driver = Arc::new(Mutex::new(driver));
-        
+
         // Broadcast channels for waterfall and audio
         let (waterfall_tx, _) = broadcast::channel(16);
-        let (audio_tx,     _) = broadcast::channel(16);
+        let (audio_tx, _) = broadcast::channel(16);
 
         let state = Arc::new(Self {
             driver: driver.clone(),
             waterfall_tx: waterfall_tx.clone(),
-            audio_tx:     audio_tx.clone(),
+            audio_tx: audio_tx.clone(),
         });
 
         // 1. Hardware Pipeline Task (FFT + Demod)
@@ -70,7 +78,7 @@ impl WebSdrServer {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         info!("WebSDR Backend listening on http://{}", addr);
         axum::serve(listener, app).await?;
-        
+
         Ok(())
     }
 }
@@ -88,19 +96,24 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
     // Send initial hardware info
     let (info, _freq, _gain) = {
         let d = state.driver.lock().await;
-        (d.info.clone(), d.frequency, d.tuner.get_gain().unwrap_or_else(|_| 0.0))
+        (
+            d.info.clone(),
+            d.frequency,
+            d.tuner.get_gain().unwrap_or_else(|_| 0.0),
+        )
     };
-    
+
     let json = serde_json::to_string(&WebEvent::HardwareInfo {
         manufacturer: info.manufacturer,
         product: info.product,
         is_v4: info.is_v4,
-    }).expect("Serialization failed");
-    
+    })
+    .expect("Serialization failed");
+
     let _ = socket.send(Message::Text(json.into())).await;
 
     let mut waterfall_rx = state.waterfall_tx.subscribe();
-    let mut audio_rx     = state.audio_tx.subscribe();
+    let mut audio_rx = state.audio_tx.subscribe();
 
     let (sender, mut receiver) = socket.split();
 
@@ -112,7 +125,15 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
         while let Ok(data) = waterfall_rx.recv().await {
             let mut msg = vec![b'W'];
             msg.extend_from_slice(&data);
-            if s1.lock().await.send(Message::Binary(msg.into())).await.is_err() { break; }
+            if s1
+                .lock()
+                .await
+                .send(Message::Binary(msg.into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
         }
     });
 
@@ -125,7 +146,15 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
             for &sample in data.iter() {
                 msg.extend_from_slice(&sample.to_le_bytes());
             }
-            if s2.lock().await.send(Message::Binary(msg.into())).await.is_err() { break; }
+            if s2
+                .lock()
+                .await
+                .send(Message::Binary(msg.into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
         }
     });
 
@@ -137,45 +166,57 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
             if let Ok(cmd) = serde_json::from_str::<Command>(&text) {
                 let mut d = cmd_driver.lock().await;
                 match cmd {
-                    Command::SetFrequency { hz } => { 
-                        match d.set_frequency(hz) {
-                            Ok(actual) => {
-                                let reply = serde_json::json!({
-                                    "type": "freqconfirm",
-                                    "requested": hz,
-                                    "actual": actual,
-                                });
-                                let _ = s_cmd.lock().await.send(Message::Text(reply.to_string().into())).await;
-                            }
-                            Err(e) => {
-                                let reply = serde_json::json!({
-                                    "type": "error",
-                                    "cmd": "setfrequency",
-                                    "msg": e.to_string(),
-                                });
-                                let _ = s_cmd.lock().await.send(Message::Text(reply.to_string().into())).await;
-                            }
+                    Command::SetFrequency { hz } => match d.set_frequency(hz) {
+                        Ok(actual) => {
+                            let reply = serde_json::json!({
+                                "type": "freqconfirm",
+                                "requested": hz,
+                                "actual": actual,
+                            });
+                            let _ = s_cmd
+                                .lock()
+                                .await
+                                .send(Message::Text(reply.to_string().into()))
+                                .await;
                         }
-                    }
-                    Command::SetGain { db } => { 
-                        match d.tuner.set_gain(db) {
-                            Ok(actual) => {
-                                let reply = serde_json::json!({
-                                    "type": "gainconfirm",
-                                    "actual": actual,
-                                });
-                                let _ = s_cmd.lock().await.send(Message::Text(reply.to_string().into())).await;
-                            }
-                            Err(e) => {
-                                let reply = serde_json::json!({
-                                    "type": "error",
-                                    "cmd": "setgain",
-                                    "msg": e.to_string(),
-                                });
-                                let _ = s_cmd.lock().await.send(Message::Text(reply.to_string().into())).await;
-                            }
+                        Err(e) => {
+                            let reply = serde_json::json!({
+                                "type": "error",
+                                "cmd": "setfrequency",
+                                "msg": e.to_string(),
+                            });
+                            let _ = s_cmd
+                                .lock()
+                                .await
+                                .send(Message::Text(reply.to_string().into()))
+                                .await;
                         }
-                    }
+                    },
+                    Command::SetGain { db } => match d.tuner.set_gain(db) {
+                        Ok(actual) => {
+                            let reply = serde_json::json!({
+                                "type": "gainconfirm",
+                                "actual": actual,
+                            });
+                            let _ = s_cmd
+                                .lock()
+                                .await
+                                .send(Message::Text(reply.to_string().into()))
+                                .await;
+                        }
+                        Err(e) => {
+                            let reply = serde_json::json!({
+                                "type": "error",
+                                "cmd": "setgain",
+                                "msg": e.to_string(),
+                            });
+                            let _ = s_cmd
+                                .lock()
+                                .await
+                                .send(Message::Text(reply.to_string().into()))
+                                .await;
+                        }
+                    },
                     Command::SetDemod { .. } => { /* TODO: Dynamic switch */ }
                 }
             }
@@ -198,27 +239,26 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut stream = {
         let d = state.driver.lock().await;
         let stream: crate::stream::F32Stream<rusb::Context> = d.stream_f32(8);
-        stream.with_dc_removal(0.01)
-            .with_agc(1.0, 0.01, 0.01)
+        stream.with_dc_removal(0.01).with_agc(1.0, 0.01, 0.01)
     };
 
     let mut fm = FmDemodulator::new();
     let mut planner = FftPlanner::new();
     let fft_size = 1024;
     let fft = planner.plan_fft_forward(fft_size);
-    
+
     let mut audio_decimator = Decimator::new(5, 0.1, 31); // 256k -> 51k (audio-ish)
 
     while let Some(res) = stream.next().await {
         let iq_pooled = res?;
         let iq = &*iq_pooled;
-        
+
         // 1. FFT for Waterfall
         if iq.len() >= fft_size * 2 {
             let mut buffer: Vec<Complex<f32>> = (0..fft_size)
-                .map(|i| Complex::new(iq[i*2], iq[i*2+1]))
+                .map(|i| Complex::new(iq[i * 2], iq[i * 2 + 1]))
                 .collect();
-            
+
             fft.process(&mut buffer);
 
             // Shift (center DC) and convert to magnitude bytes

@@ -1,6 +1,6 @@
+use log::{error, info};
 use rtlsdr_next::Driver;
 use std::time::Instant;
-use log::{info, error};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -13,21 +13,37 @@ async fn main() -> anyhow::Result<()> {
     let mut driver = match Driver::new() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Error opening device: {:?}\n(Check that your RTL-SDR is plugged in and you have USB permissions)", e);
+            eprintln!(
+                "Error opening device: {:?}\n(Check that your RTL-SDR is plugged in and you have USB permissions)",
+                e
+            );
             return Ok(());
         }
     };
 
-    info!("Device Info: {} {}", driver.info.manufacturer, driver.info.product);
-    info!("Hardware Version: {}", if driver.info.is_v4 { "V4 (R828D)" } else { "V3/Generic" });
+    info!(
+        "Device Info: {} {}",
+        driver.info.manufacturer, driver.info.product
+    );
+    info!(
+        "Hardware Version: {}",
+        if driver.info.is_v4 {
+            "V4 (R828D)"
+        } else {
+            "V3/Generic"
+        }
+    );
 
     // 2. Configure the hardware
     // Apply a 50 PPM correction (typical for some crystals)
-    driver.set_ppm(0)?; 
-    
+    driver.set_ppm(0)?;
+
     // Set frequency to 100 MHz (VHF FM Band)
     let actual_freq = driver.set_frequency(100_000_000)?;
-    info!("Center Frequency set to: {:.3} MHz", actual_freq as f64 / 1e6);
+    info!(
+        "Center Frequency set to: {:.3} MHz",
+        actual_freq as f64 / 1e6
+    );
 
     // Set gain to ~30 dB
     let actual_gain = driver.tuner.set_gain(29.7)?;
@@ -38,7 +54,11 @@ async fn main() -> anyhow::Result<()> {
     let factor = 8;
     let mut stream = driver.stream_f32(factor);
     let output_rate = 2_048_000 / factor;
-    info!("Stream initialized: {} kSPS (Decimation Factor: {})", output_rate / 1000, factor);
+    info!(
+        "Stream initialized: {} kSPS (Decimation Factor: {})",
+        output_rate / 1000,
+        factor
+    );
 
     info!("Monitoring signals (Ctrl+C to stop)...");
 
@@ -75,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
                         mag_sum += (i_val * i_val + q_val * q_val).sqrt();
                     }
                     let avg_mag = mag_sum / (iq_data.len() / 2) as f32;
-                    
+
                     let elapsed = start_time.elapsed().as_secs_f64();
                     let throughput = (total_samples as f64 / elapsed) / 1000.0;
 

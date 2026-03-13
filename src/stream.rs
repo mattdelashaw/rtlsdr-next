@@ -1,12 +1,12 @@
-use crate::device::{Device, TransportBuffer, HardwareInterface};
+use crate::device::{Device, HardwareInterface, TransportBuffer};
 use crate::error::Error;
-use rusb::UsbContext;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 use log::error;
+use rusb::UsbContext;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::converter;
 use crate::dsp::Decimator;
@@ -23,7 +23,10 @@ pub struct PooledBuffer<B: Send + 'static> {
 
 impl<B: Send + 'static> PooledBuffer<B> {
     pub fn new(buffer: B, pool_tx: Option<mpsc::Sender<B>>) -> Self {
-        Self { inner: Some(buffer), pool_tx }
+        Self {
+            inner: Some(buffer),
+            pool_tx,
+        }
     }
 }
 
@@ -31,13 +34,17 @@ impl<B: Send + 'static> Deref for PooledBuffer<B> {
     type Target = B;
     fn deref(&self) -> &Self::Target {
         // inner is only None after Drop — unreachable in normal use.
-        self.inner.as_ref().expect("PooledBuffer accessed after drop")
+        self.inner
+            .as_ref()
+            .expect("PooledBuffer accessed after drop")
     }
 }
 
 impl<B: Send + 'static> DerefMut for PooledBuffer<B> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.inner.as_mut().expect("PooledBuffer accessed after drop")
+        self.inner
+            .as_mut()
+            .expect("PooledBuffer accessed after drop")
     }
 }
 
@@ -70,7 +77,7 @@ impl<T: UsbContext + 'static> SampleStream<T> {
     pub fn new(device: Arc<Device<T>>) -> Self {
         let (tx, rx) = mpsc::channel(NUM_BUFFERS);
         let (pool_tx, mut pool_rx) = mpsc::channel::<TransportBuffer<T>>(NUM_BUFFERS);
-        
+
         // Pre-fill the pool with DMA-capable TransportBuffers
         for _ in 0..NUM_BUFFERS {
             // Each buffer holds an Arc to the device
@@ -80,11 +87,13 @@ impl<T: UsbContext + 'static> SampleStream<T> {
 
         let cancel_token = CancellationToken::new();
         let cancel_clone = cancel_token.clone();
-        
+
         std::thread::spawn(move || {
             loop {
-                if cancel_clone.is_cancelled() { break; }
-                
+                if cancel_clone.is_cancelled() {
+                    break;
+                }
+
                 // Get a TransportBuffer from the pool
                 let mut buf = match pool_rx.blocking_recv() {
                     Some(b) => b,
@@ -96,7 +105,9 @@ impl<T: UsbContext + 'static> SampleStream<T> {
                     Ok(n) => {
                         if n > 0 {
                             let pooled = PooledBuffer::new(buf, Some(pool_tx.clone()));
-                            if tx.blocking_send(Ok(pooled)).is_err() { break; }
+                            if tx.blocking_send(Ok(pooled)).is_err() {
+                                break;
+                            }
                         } else {
                             // Zero-byte read: the DMA buffer may have been partially
                             // written by the host controller. We recycle it anyway —
@@ -120,33 +131,40 @@ impl<T: UsbContext + 'static> SampleStream<T> {
             }
         });
 
-        Self { receiver: rx, cancel_token }
+        Self {
+            receiver: rx,
+            cancel_token,
+        }
     }
 
     pub async fn next(&mut self) -> Option<crate::Result<PooledBuffer<TransportBuffer<T>>>> {
         self.receiver.recv().await
     }
 
-    pub fn close(&self) { self.cancel_token.cancel(); }
+    pub fn close(&self) {
+        self.cancel_token.cancel();
+    }
 }
 
 impl<T: UsbContext> Drop for SampleStream<T> {
-    fn drop(&mut self) { self.cancel_token.cancel(); }
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
+    }
 }
 
 /// A high-level DSP stream that produces interleaved F32 samples.
 pub struct F32Stream<T: UsbContext + 'static> {
     raw_stream: SampleStream<T>,
-    decimator:  Option<Decimator>,
+    decimator: Option<Decimator>,
     dc_remover: Option<crate::dsp::DcRemover>,
-    agc:        Option<crate::dsp::Agc>,
-    
+    agc: Option<crate::dsp::Agc>,
+
     // Output Pools (Vec<f32> is sufficient here, no DMA needed for DSP output)
-    pool_f32_tx:    mpsc::Sender<Vec<f32>>,
-    pool_f32_rx:    mpsc::Receiver<Vec<f32>>,
-    
-    pool_dec_tx:    mpsc::Sender<Vec<f32>>,
-    pool_dec_rx:    mpsc::Receiver<Vec<f32>>,
+    pool_f32_tx: mpsc::Sender<Vec<f32>>,
+    pool_f32_rx: mpsc::Receiver<Vec<f32>>,
+
+    pool_dec_tx: mpsc::Sender<Vec<f32>>,
+    pool_dec_rx: mpsc::Receiver<Vec<f32>>,
 }
 
 impl<T: UsbContext + 'static> F32Stream<T> {
@@ -158,15 +176,15 @@ impl<T: UsbContext + 'static> F32Stream<T> {
         };
 
         let (p1_tx, p1_rx) = mpsc::channel(NUM_BUFFERS);
-        for _ in 0..NUM_BUFFERS { 
-            let _ = p1_tx.try_send(vec![0.0f32; BUFFER_SIZE]); 
+        for _ in 0..NUM_BUFFERS {
+            let _ = p1_tx.try_send(vec![0.0f32; BUFFER_SIZE]);
         }
 
         let (p2_tx, p2_rx) = mpsc::channel(NUM_BUFFERS);
         if decimation_factor > 1 {
             let decimated_size = BUFFER_SIZE / decimation_factor + 16;
-            for _ in 0..NUM_BUFFERS { 
-                let _ = p2_tx.try_send(vec![0.0f32; decimated_size]); 
+            for _ in 0..NUM_BUFFERS {
+                let _ = p2_tx.try_send(vec![0.0f32; decimated_size]);
             }
         }
 
@@ -174,7 +192,7 @@ impl<T: UsbContext + 'static> F32Stream<T> {
             raw_stream,
             decimator,
             dc_remover: None,
-            agc:        None,
+            agc: None,
             pool_f32_tx: p1_tx,
             pool_f32_rx: p1_rx,
             pool_dec_tx: p2_tx,
@@ -199,7 +217,7 @@ impl<T: UsbContext + 'static> F32Stream<T> {
             Ok(data) => data,
             Err(e) => return Some(Err(e)),
         };
-        
+
         // Deref the PooledBuffer to get TransportBuffer, then deref that to get &[u8]
         let u8_data = &*u8_data_buffer;
 
@@ -207,12 +225,18 @@ impl<T: UsbContext + 'static> F32Stream<T> {
             Some(b) => b,
             None => return Some(Err(Error::ChannelClosed)),
         };
-        if f32_buf.len() != u8_data.len() { f32_buf.resize(u8_data.len(), 0.0); }
+        if f32_buf.len() != u8_data.len() {
+            f32_buf.resize(u8_data.len(), 0.0);
+        }
 
         converter::convert(u8_data, &mut f32_buf);
 
-        if let Some(dc) = &mut self.dc_remover { dc.process(&mut f32_buf); }
-        if let Some(agc) = &mut self.agc { agc.process(&mut f32_buf); }
+        if let Some(dc) = &mut self.dc_remover {
+            dc.process(&mut f32_buf);
+        }
+        if let Some(agc) = &mut self.agc {
+            agc.process(&mut f32_buf);
+        }
 
         if let Some(dec) = &mut self.decimator {
             let mut dec_buf = match self.pool_dec_rx.recv().await {
@@ -220,22 +244,32 @@ impl<T: UsbContext + 'static> F32Stream<T> {
                 None => return Some(Err(Error::ChannelClosed)),
             };
             dec.process_into(&f32_buf, &mut dec_buf);
-            
+
             // Return intermediate buffer to pool. This runs in an async context
             // so we can await rather than risk dropping the buffer.
             if let Err(mpsc::error::TrySendError::Full(buf)) = self.pool_f32_tx.try_send(f32_buf) {
                 // Pool is full — someone is not consuming fast enough. Send async.
                 let tx = self.pool_f32_tx.clone();
-                tokio::spawn(async move { let _ = tx.send(buf).await; });
+                tokio::spawn(async move {
+                    let _ = tx.send(buf).await;
+                });
             }
-            
-            Some(Ok(PooledBuffer::new(dec_buf, Some(self.pool_dec_tx.clone()))))
+
+            Some(Ok(PooledBuffer::new(
+                dec_buf,
+                Some(self.pool_dec_tx.clone()),
+            )))
         } else {
-            Some(Ok(PooledBuffer::new(f32_buf, Some(self.pool_f32_tx.clone()))))
+            Some(Ok(PooledBuffer::new(
+                f32_buf,
+                Some(self.pool_f32_tx.clone()),
+            )))
         }
     }
 
-    pub fn close(&self) { self.raw_stream.close(); }
+    pub fn close(&self) {
+        self.raw_stream.close();
+    }
 }
 
 impl<T: UsbContext + 'static> Drop for F32Stream<T> {

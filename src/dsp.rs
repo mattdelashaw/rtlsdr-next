@@ -48,12 +48,10 @@ pub fn design_lowpass(num_taps: usize, cutoff: f32) -> Vec<f32> {
             let sinc = if n == 0.0 {
                 2.0 * cutoff
             } else {
-                (2.0 * std::f32::consts::PI * cutoff * n).sin()
-                    / (std::f32::consts::PI * n)
+                (2.0 * std::f32::consts::PI * cutoff * n).sin() / (std::f32::consts::PI * n)
             };
             // Hamming window
-            let window =
-                0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / m).cos();
+            let window = 0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / m).cos();
             sinc * window
         })
         .collect();
@@ -93,9 +91,14 @@ impl Decimator {
     /// * `num_taps` — FIR length (odd; higher = sharper but more latency)
     pub fn new(factor: usize, cutoff: f32, num_taps: usize) -> Self {
         assert!(factor >= 2, "decimation factor must be >= 2");
-        let taps    = design_lowpass(num_taps, cutoff);
+        let taps = design_lowpass(num_taps, cutoff);
         let history = vec![0.0f32; taps.len() - 1];
-        Self { taps, history, factor, phase: 0 }
+        Self {
+            taps,
+            history,
+            factor,
+            phase: 0,
+        }
     }
 
     /// Convenience constructor that picks a sensible cutoff and tap count.
@@ -103,7 +106,7 @@ impl Decimator {
     /// cutoff  = 0.45 / factor  (10% guard band before Nyquist)
     /// num_taps = 4 * factor + 1  (scales with decimation ratio)
     pub fn with_factor(factor: usize) -> Self {
-        let cutoff   = 0.45 / factor as f32;
+        let cutoff = 0.45 / factor as f32;
         let num_taps = 4 * factor + 1;
         Self::new(factor, cutoff, num_taps)
     }
@@ -117,9 +120,9 @@ impl Decimator {
 
         // Build the extended buffer: history || input
         let taps_len = self.taps.len();
-        let overlap  = taps_len - 1;
+        let overlap = taps_len - 1;
 
-        // Note: Using a pre-allocated extended buffer would be even faster, 
+        // Note: Using a pre-allocated extended buffer would be even faster,
         // but for now let's focus on the output allocation.
         let mut extended = Vec::with_capacity(overlap + input.len());
         extended.extend_from_slice(&self.history);
@@ -130,13 +133,7 @@ impl Decimator {
         {
             if std::arch::is_aarch64_feature_detected!("neon") {
                 unsafe {
-                    fir_decimate_neon(
-                        &extended,
-                        &self.taps,
-                        self.factor,
-                        &mut self.phase,
-                        output,
-                    );
+                    fir_decimate_neon(&extended, &self.taps, self.factor, &mut self.phase, output);
                 }
                 // Update history
                 let new_history_start = extended.len() - overlap;
@@ -145,13 +142,7 @@ impl Decimator {
             }
         }
 
-        fir_decimate_scalar(
-            &extended,
-            &self.taps,
-            self.factor,
-            &mut self.phase,
-            output,
-        );
+        fir_decimate_scalar(&extended, &self.taps, self.factor, &mut self.phase, output);
 
         // Update history for next block
         let new_history_start = extended.len() - overlap;
@@ -160,8 +151,7 @@ impl Decimator {
 
     /// Process a block of samples and return a new Vec.
     pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
-        let output_len = (input.len().saturating_sub(self.phase) + self.factor - 1)
-            / self.factor;
+        let output_len = (input.len().saturating_sub(self.phase) + self.factor - 1) / self.factor;
         let mut output = Vec::with_capacity(output_len);
         self.process_into(input, &mut output);
         output
@@ -180,14 +170,14 @@ impl Decimator {
 
 fn fir_decimate_scalar(
     extended: &[f32],
-    taps:     &[f32],
-    factor:   usize,
-    phase:    &mut usize,
-    output:   &mut Vec<f32>,
+    taps: &[f32],
+    factor: usize,
+    phase: &mut usize,
+    output: &mut Vec<f32>,
 ) {
-    let taps_len   = taps.len();
-    let overlap    = taps_len - 1;
-    let input_len  = extended.len() - overlap;
+    let taps_len = taps.len();
+    let overlap = taps_len - 1;
+    let input_len = extended.len() - overlap;
 
     let mut i = *phase;
     while i < input_len {
@@ -213,15 +203,15 @@ fn fir_decimate_scalar(
 #[target_feature(enable = "neon")]
 unsafe fn fir_decimate_neon(
     extended: &[f32],
-    taps:     &[f32],
-    factor:   usize,
-    phase:    &mut usize,
-    output:   &mut Vec<f32>,
+    taps: &[f32],
+    factor: usize,
+    phase: &mut usize,
+    output: &mut Vec<f32>,
 ) {
     use std::arch::aarch64::*;
 
-    let taps_len  = taps.len();
-    let overlap   = taps_len - 1;
+    let taps_len = taps.len();
+    let overlap = taps_len - 1;
     let input_len = extended.len() - overlap;
 
     // Number of tap-groups we can process 4-at-a-time
@@ -233,12 +223,12 @@ unsafe fn fir_decimate_neon(
         if i + taps_len > extended.len() {
             break;
         }
-        
-        let win_ptr  = unsafe { extended.as_ptr().add(i) };
+
+        let win_ptr = unsafe { extended.as_ptr().add(i) };
         let taps_ptr = taps.as_ptr();
 
         let mut v_acc = vdupq_n_f32(0.0);
-        let mut j     = 0usize;
+        let mut j = 0usize;
 
         // ── 4-wide FMA loop ──────────────────────────────────────────────
         while j < taps_simd {
@@ -249,9 +239,9 @@ unsafe fn fir_decimate_neon(
             unsafe {
                 let v_s = vld1q_f32(win_ptr.add(j));
                 let v_t = vld1q_f32(taps_ptr.add(j));
-                v_acc   = vmlaq_f32(v_acc, v_s, v_t);
+                v_acc = vmlaq_f32(v_acc, v_s, v_t);
             }
-            j      += 4;
+            j += 4;
         }
 
         // ── Horizontal sum of 4 lanes ────────────────────────────────────
@@ -263,7 +253,7 @@ unsafe fn fir_decimate_neon(
             if i + j < extended.len() && j < taps.len() {
                 acc += extended[i + j] * taps[j];
             }
-            j   += 1;
+            j += 1;
         }
 
         output.push(acc);
@@ -288,20 +278,24 @@ pub struct DcRemover {
 
 impl DcRemover {
     pub fn new(alpha: f32) -> Self {
-        Self { avg_i: 0.0, avg_q: 0.0, alpha }
+        Self {
+            avg_i: 0.0,
+            avg_q: 0.0,
+            alpha,
+        }
     }
 
     /// Process a block of interleaved I/Q samples.
     pub fn process(&mut self, data: &mut [f32]) {
         for i in (0..data.len()).step_by(2) {
             let i_val = data[i];
-            let q_val = data[i+1];
+            let q_val = data[i + 1];
 
             self.avg_i = (1.0 - self.alpha) * self.avg_i + self.alpha * i_val;
             self.avg_q = (1.0 - self.alpha) * self.avg_q + self.alpha * q_val;
 
-            data[i]   = i_val - self.avg_i;
-            data[i+1] = q_val - self.avg_q;
+            data[i] = i_val - self.avg_i;
+            data[i + 1] = q_val - self.avg_q;
         }
     }
 }
@@ -312,32 +306,41 @@ impl DcRemover {
 
 /// A simple feedback-loop AGC to maintain a target signal level.
 pub struct Agc {
-    gain:   f32,
+    gain: f32,
     target: f32,
     attack: f32,
-    decay:  f32,
+    decay: f32,
 }
 
 impl Agc {
     pub fn new(target: f32, attack: f32, decay: f32) -> Self {
-        Self { gain: 1.0, target, attack, decay }
+        Self {
+            gain: 1.0,
+            target,
+            attack,
+            decay,
+        }
     }
 
     /// Process a block of interleaved I/Q samples.
     pub fn process(&mut self, data: &mut [f32]) {
         for i in (0..data.len()).step_by(2) {
             let i_val = data[i];
-            let q_val = data[i+1];
+            let q_val = data[i + 1];
 
             let mag = (i_val * i_val + q_val * q_val).sqrt();
             let error = self.target / (mag + 1e-6);
 
             // Simple attack/decay logic
-            let coeff = if error < self.gain { self.attack } else { self.decay };
+            let coeff = if error < self.gain {
+                self.attack
+            } else {
+                self.decay
+            };
             self.gain = (1.0 - coeff) * self.gain + coeff * error;
 
-            data[i]   *= self.gain;
-            data[i+1] *= self.gain;
+            data[i] *= self.gain;
+            data[i + 1] *= self.gain;
         }
     }
 }
@@ -365,7 +368,7 @@ impl FmDemodulator {
         let mut output = Vec::with_capacity(input.len() / 2);
         for i in (0..input.len()).step_by(2) {
             let i_val = input[i];
-            let q_val = input[i+1];
+            let q_val = input[i + 1];
 
             let phase = q_val.atan2(i_val);
             let mut diff = phase - self.last_phase;
@@ -385,7 +388,9 @@ impl FmDemodulator {
 }
 
 impl Default for FmDemodulator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ============================================================
@@ -473,7 +478,9 @@ mod tests {
             assert!(
                 (taps[i] - taps[n - 1 - i]).abs() < EPS,
                 "Not symmetric at index {}: {} vs {}",
-                i, taps[i], taps[n - 1 - i]
+                i,
+                taps[i],
+                taps[n - 1 - i]
             );
         }
     }
@@ -485,9 +492,9 @@ mod tests {
         // A DC input should pass through a LPF and decimate correctly.
         // We skip the initial filter transient — the first ceil(taps/2/factor)
         // output samples are influenced by the zero-initialized history buffer.
-        let mut dec   = Decimator::new(4, 0.1, 17);
-        let input     = vec![1.0f32; 128]; // longer input to get past transient
-        let output    = dec.process(&input);
+        let mut dec = Decimator::new(4, 0.1, 17);
+        let input = vec![1.0f32; 128]; // longer input to get past transient
+        let output = dec.process(&input);
 
         assert_eq!(output.len(), 128 / 4);
 
@@ -501,8 +508,8 @@ mod tests {
     #[test]
     fn test_output_length() {
         let mut dec = Decimator::with_factor(8);
-        let input   = vec![0.0f32; 256];
-        let out     = dec.process(&input);
+        let input = vec![0.0f32; 256];
+        let out = dec.process(&input);
         assert_eq!(out.len(), 256 / 8);
     }
 
@@ -511,7 +518,7 @@ mod tests {
         // A signal at exactly Nyquist (alternating +1/-1) should be
         // heavily attenuated by the LPF before decimation.
         // Use more taps for better stopband attenuation.
-        let mut dec   = Decimator::new(4, 0.1, 63);
+        let mut dec = Decimator::new(4, 0.1, 63);
         let input: Vec<f32> = (0..512)
             .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
             .collect();
@@ -533,7 +540,7 @@ mod tests {
             .collect();
 
         let mut dec_one = Decimator::new(4, 0.1, 17);
-        let out_one     = dec_one.process(&signal);
+        let out_one = dec_one.process(&signal);
 
         let mut dec_two = Decimator::new(4, 0.1, 17);
         let mut out_two = dec_two.process(&signal[..256]);
@@ -547,22 +554,24 @@ mod tests {
             assert!(
                 (out_one[i] - out_two[i]).abs() < EPS,
                 "Block boundary mismatch at output[{}]: {} vs {}",
-                i, out_one[i], out_two[i]
+                i,
+                out_one[i],
+                out_two[i]
             );
         }
     }
 
     #[test]
     fn test_reset_clears_state() {
-        let mut dec   = Decimator::new(4, 0.1, 17);
-        let signal    = vec![1.0f32; 64];
-        let _         = dec.process(&signal); // warm up history
+        let mut dec = Decimator::new(4, 0.1, 17);
+        let signal = vec![1.0f32; 64];
+        let _ = dec.process(&signal); // warm up history
         dec.reset();
 
         // After reset, history is zero so output should match a fresh decimator
-        let mut dec2  = Decimator::new(4, 0.1, 17);
-        let out1      = dec.process(&signal);
-        let out2      = dec2.process(&signal);
+        let mut dec2 = Decimator::new(4, 0.1, 17);
+        let out1 = dec.process(&signal);
+        let out2 = dec2.process(&signal);
 
         for (a, b) in out1.iter().zip(out2.iter()) {
             assert!((a - b).abs() < EPS, "Post-reset mismatch: {} vs {}", a, b);
@@ -583,28 +592,30 @@ mod tests {
             .collect();
 
         // Scalar path — generate taps independently, don't access private field
-        let taps_s    = design_lowpass(17, 0.1);
-        let out_s     = {
+        let taps_s = design_lowpass(17, 0.1);
+        let out_s = {
             let taps_len = taps_s.len();
-            let overlap  = taps_len - 1;
-            let mut ext  = vec![0.0f32; overlap];
+            let overlap = taps_len - 1;
+            let mut ext = vec![0.0f32; overlap];
             ext.extend_from_slice(&signal);
-            let mut out  = Vec::new();
-            let mut ph   = 0usize;
+            let mut out = Vec::new();
+            let mut ph = 0usize;
             fir_decimate_scalar(&ext, &taps_s, 4, &mut ph, &mut out);
             out
         };
 
         // NEON path
         let out_n = {
-            let taps_n   = design_lowpass(17, 0.1);
+            let taps_n = design_lowpass(17, 0.1);
             let taps_len = taps_n.len();
-            let overlap  = taps_len - 1;
-            let mut ext  = vec![0.0f32; overlap];
+            let overlap = taps_len - 1;
+            let mut ext = vec![0.0f32; overlap];
             ext.extend_from_slice(&signal);
-            let mut out  = Vec::new();
-            let mut ph   = 0usize;
-            unsafe { fir_decimate_neon(&ext, &taps_n, 4, &mut ph, &mut out); }
+            let mut out = Vec::new();
+            let mut ph = 0usize;
+            unsafe {
+                fir_decimate_neon(&ext, &taps_n, 4, &mut ph, &mut out);
+            }
             out
         };
 
@@ -613,7 +624,9 @@ mod tests {
             assert!(
                 (s - n).abs() < 1e-4,
                 "NEON/scalar mismatch at [{}]: scalar={} neon={}",
-                i, s, n
+                i,
+                s,
+                n
             );
         }
     }

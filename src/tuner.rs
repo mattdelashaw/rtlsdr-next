@@ -12,7 +12,7 @@ pub enum TunerType {
 
 pub struct FilterRange {
     pub start_hz: u64,
-    pub end_hz:   u64,
+    pub end_hz: u64,
 }
 
 /// Board-level configuration injected into the `Driver` orchestrator.
@@ -36,7 +36,7 @@ impl BoardConfig {
             BoardConfig::Generic => false,
             BoardConfig::BlogV4 => {
                 freq_hz <= 2_200_000
-                    || (freq_hz >= 85_000_000  && freq_hz <= 112_000_000)
+                    || (freq_hz >= 85_000_000 && freq_hz <= 112_000_000)
                     || (freq_hz >= 172_000_000 && freq_hz <= 242_000_000)
             }
         }
@@ -50,11 +50,11 @@ impl BoardConfig {
             BoardConfig::Generic => None,
             BoardConfig::BlogV4 => {
                 if freq_hz < 28_800_000 {
-                    Some(InputPath::Hf)   // HF: cable 2, GPIO5 low
+                    Some(InputPath::Hf) // HF: cable 2, GPIO5 low
                 } else if freq_hz < 250_000_000 {
-                    Some(InputPath::Vhf)  // VHF: cable 1, GPIO5 high
+                    Some(InputPath::Vhf) // VHF: cable 1, GPIO5 high
                 } else {
-                    Some(InputPath::Uhf)  // UHF: air in, GPIO5 high
+                    Some(InputPath::Uhf) // UHF: air in, GPIO5 high
                 }
             }
         }
@@ -62,7 +62,11 @@ impl BoardConfig {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum InputPath { Hf, Vhf, Uhf }
+pub enum InputPath {
+    Hf,
+    Vhf,
+    Uhf,
+}
 
 pub trait Tuner: Send + Sync {
     /// Initialize the tuner chip with default registers.
@@ -92,11 +96,15 @@ pub trait Tuner: Send + Sync {
 
     /// Set the internal input mux path (e.g. for V4 triplexer).
     /// Default: no-op.
-    fn set_input_path(&self, _path: InputPath) -> Result<()> { Ok(()) }
+    fn set_input_path(&self, _path: InputPath) -> Result<()> {
+        Ok(())
+    }
 
     /// Apply board-level notch filter hint. Called by the orchestrator
     /// after `set_frequency` so the chip can adjust `open_d` in `set_mux`
     /// without knowing anything about the board it's sitting on.
     /// Default: no-op (Generic boards, future tuners).
-    fn apply_notch(&self, _in_notch_band: bool) -> Result<()> { Ok(()) }
+    fn apply_notch(&self, _in_notch_band: bool) -> Result<()> {
+        Ok(())
+    }
 }

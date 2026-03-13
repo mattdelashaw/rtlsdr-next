@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rtlsdr_next::converter;
 use rtlsdr_next::dsp::Decimator;
 
@@ -21,7 +21,7 @@ fn bench_converter(c: &mut Criterion) {
 fn bench_decimator(c: &mut Criterion) {
     let size = 256 * 1024;
     let input = vec![0.0f32; size];
-    
+
     let mut group = c.benchmark_group("Decimator");
     group.throughput(criterion::Throughput::Elements(size as u64));
 

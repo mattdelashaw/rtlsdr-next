@@ -9,7 +9,7 @@
 //!
 //! The C code is compiled only if the `bench-c` feature is enabled.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rtlsdr_next::converter;
 use rtlsdr_next::converter::Converter;
 use rtlsdr_next::converter::ScalarConverter;
@@ -106,7 +106,11 @@ fn bench_decimator(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("rtlsdr-next FIR", factor),
             &factor,
-            |b, _| b.iter(|| { let _ = dec.process(black_box(&input)); }),
+            |b, _| {
+                b.iter(|| {
+                    let _ = dec.process(black_box(&input));
+                })
+            },
         );
     }
 
@@ -118,7 +122,7 @@ fn bench_decimator(c: &mut Criterion) {
 // ============================================================
 
 fn bench_pipeline(c: &mut Criterion) {
-    let src_u8      = vec![127u8; BLOCK_SIZE];
+    let src_u8 = vec![127u8; BLOCK_SIZE];
     let mut f32_buf = vec![0.0f32; BLOCK_SIZE];
 
     let mut group = c.benchmark_group("Full pipeline / 256KB block");

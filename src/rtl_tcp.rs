@@ -1,9 +1,9 @@
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::broadcast;
-use std::sync::Arc;
-use log::{info, error, warn, trace};
 use byteorder::{BigEndian, ByteOrder};
+use log::{error, info, trace, warn};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use crate::Driver;
@@ -18,10 +18,7 @@ pub struct TcpServer {
 impl TcpServer {
     /// Start an rtl_tcp compatible server.
     /// This allows apps like OpenWebRX, SDR#, or GQRX to connect over the network.
-    pub async fn start(
-        driver: Driver,
-        addr: &str,
-    ) -> std::io::Result<Self> {
+    pub async fn start(driver: Driver, addr: &str) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         info!("rtl_tcp server listening on {}", addr);
@@ -120,8 +117,13 @@ async fn handle_client(
             let mut d = cmd_driver.lock().await;
             trace!("Received command: {:?}, arg: {:?}", cmd, arg);
             match cmd {
-                0x01 => { let r = d.set_frequency(arg as u64); trace!("set_frequency({}) = {:?}", arg, r); }
-                0x02 => { let _ = d.set_sample_rate(arg); }
+                0x01 => {
+                    let r = d.set_frequency(arg as u64);
+                    trace!("set_frequency({}) = {:?}", arg, r);
+                }
+                0x02 => {
+                    let _ = d.set_sample_rate(arg);
+                }
                 // 0x03: set gain mode — 0=auto(AGC), 1=manual
                 // When auto, set a reasonable default gain; manual gain comes via 0x04
                 0x03 => {
@@ -129,14 +131,22 @@ async fn handle_client(
                         let _ = d.tuner.set_gain(30.0); // auto: use mid gain
                     }
                 }
-                0x04 => { let _ = d.tuner.set_gain(arg as f32 / 10.0); }
-                0x05 => { let _ = d.set_ppm(arg as i32); }
+                0x04 => {
+                    let _ = d.tuner.set_gain(arg as f32 / 10.0);
+                }
+                0x05 => {
+                    let _ = d.set_ppm(arg as i32);
+                }
                 // 0x08: set RTL AGC mode (demod AGC) — ignore for now
                 // 0x09: set direct sampling — ignore (V4 handles this internally)
                 // 0x0a: set offset tuning — ignore
                 0x08 | 0x09 | 0x0a => {}
-                0x0e => { let _ = d.set_bias_t(arg != 0); }
-                _ => { warn!("Unsupported rtl_tcp command: 0x{:02x}", cmd); }
+                0x0e => {
+                    let _ = d.set_bias_t(arg != 0);
+                }
+                _ => {
+                    warn!("Unsupported rtl_tcp command: 0x{:02x}", cmd);
+                }
             }
         }
         #[allow(unreachable_code)]
