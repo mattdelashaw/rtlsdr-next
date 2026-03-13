@@ -7,13 +7,12 @@
 
 use crate::device::HardwareInterface;
 use crate::error::{Error, Result};
-use crate::tuner::{FilterRange, Tuner};
+use crate::tuner::{FilterRange, Tuner, TunerType};
 use log::warn;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 
-const I2C_ADDR: u8 = 0x74;
 const NUM_REGS: usize = 27;
 const REG_SHADOW_START: u8 = 0x05;
 
@@ -348,8 +347,10 @@ static XTAL_CAP_SEL: [u8; 5] = [0x0b, 0x0b, 0x0b, 0x0b, 0x00];
 
 // ── parking_lot::Mutex: no poisoning, no Result unwrap, never blocks the
 //    Tokio executor even when locked from sync context. ──────────────────
-pub struct R828D {
+pub struct R82xx {
     device: Arc<dyn HardwareInterface>,
+    tuner_type: TunerType,
+    i2c_addr: u8,
     regs: Mutex<[u8; NUM_REGS]>,
     xtal_freq: Mutex<u64>,
     has_lock: Mutex<bool>,
@@ -361,11 +362,18 @@ pub struct R828D {
     in_notch: Mutex<bool>,
 }
 
-impl R828D {
+impl R82xx {
     /// `xtal_hz`: 28_800_000 for R828D/V4, 16_000_000 for R820T.
-    pub fn new(device: Arc<dyn HardwareInterface>, xtal_hz: u64) -> Self {
+    pub fn new(
+        device: Arc<dyn HardwareInterface>,
+        tuner_type: TunerType,
+        i2c_addr: u8,
+        xtal_hz: u64,
+    ) -> Self {
         Self {
             device,
+            tuner_type,
+            i2c_addr,
             regs: Mutex::new(INIT_ARRAY),
             xtal_freq: Mutex::new(xtal_hz),
             has_lock: Mutex::new(false),
@@ -387,12 +395,12 @@ impl R828D {
             regs[idx] = new;
             new
         };
-        self.device.i2c_write_tuner(I2C_ADDR, reg, &[new])
+        self.device.i2c_write_tuner(self.i2c_addr, reg, &[new])
     }
 
     fn read_status(&self) -> Result<[u8; 5]> {
-        self.device.i2c_write_tuner(I2C_ADDR, 0x00, &[])?;
-        let mut data = self.device.i2c_read_direct(I2C_ADDR, 5)?;
+        self.device.i2c_write_tuner(self.i2c_addr, 0x00, &[])?;
+        let mut data = self.device.i2c_read_direct(self.i2c_addr, 5)?;
         for byte in data.iter_mut() {
             *byte = bit_reverse(*byte);
         }
@@ -401,8 +409,8 @@ impl R828D {
 
     fn wait_pll_lock(&self, retries: u32) -> Result<bool> {
         for i in 0..retries {
-            self.device.i2c_write_tuner(I2C_ADDR, 0x00, &[])?;
-            let mut status = self.device.i2c_read_direct(I2C_ADDR, 3)?;
+            self.device.i2c_write_tuner(self.i2c_addr, 0x00, &[])?;
+            let mut status = self.device.i2c_read_direct(self.i2c_addr, 3)?;
             for byte in status.iter_mut() {
                 *byte = bit_reverse(*byte);
             }
@@ -445,8 +453,14 @@ impl R828D {
         let vco_freq = lo_freq_hz * mix_div;
         let status = self.read_status()?;
         let vco_fine_tune = (status[4] & 0x30) >> 4;
-        // R828D VCO power ref = 1, R820T = 2. We use 1 (R828D default).
-        let vco_power_ref: u64 = 1;
+
+        // R828D VCO power ref = 1, R820T = 2.
+        let vco_power_ref: u64 = match self.tuner_type {
+            TunerType::R828D => 1,
+            TunerType::R820T => 2,
+            _ => 1,
+        };
+
         if vco_fine_tune > vco_power_ref as u8 {
             div_num = div_num.saturating_sub(1);
         } else if (vco_fine_tune as u64) < vco_power_ref {
@@ -464,7 +478,7 @@ impl R828D {
         let ni = ((nint - 13) / 4) as u8;
         let si = (nint as u8).wrapping_sub(4u8.wrapping_mul(ni).wrapping_add(13));
         self.device
-            .i2c_write_tuner(I2C_ADDR, 0x14, &[ni | (si << 6)])?;
+            .i2c_write_tuner(self.i2c_addr, 0x14, &[ni | (si << 6)])?;
 
         let pw_sdm: u8 = if vco_fra == 0 { 0x08 } else { 0x00 };
         self.write_reg_mask(0x12, pw_sdm, 0x08)?;
@@ -482,9 +496,9 @@ impl R828D {
             n_sdm <<= 1;
         }
         self.device
-            .i2c_write_tuner(I2C_ADDR, 0x16, &[(sdm >> 8) as u8])?;
+            .i2c_write_tuner(self.i2c_addr, 0x16, &[(sdm >> 8) as u8])?;
         self.device
-            .i2c_write_tuner(I2C_ADDR, 0x15, &[(sdm & 0xff) as u8])?;
+            .i2c_write_tuner(self.i2c_addr, 0x15, &[(sdm & 0xff) as u8])?;
 
         if self.wait_pll_lock(10)? {
             self.write_reg_mask(0x1a, 0x08, 0x08)?;
@@ -537,13 +551,16 @@ impl R828D {
     }
 }
 
-impl Tuner for R828D {
+impl Tuner for R82xx {
     fn initialize(&self) -> Result<()> {
         let mid = 16;
         self.device
-            .i2c_write_tuner(I2C_ADDR, REG_SHADOW_START, &INIT_ARRAY[..mid])?;
-        self.device
-            .i2c_write_tuner(I2C_ADDR, REG_SHADOW_START + mid as u8, &INIT_ARRAY[mid..])?;
+            .i2c_write_tuner(self.i2c_addr, REG_SHADOW_START, &INIT_ARRAY[..mid])?;
+        self.device.i2c_write_tuner(
+            self.i2c_addr,
+            REG_SHADOW_START + mid as u8,
+            &INIT_ARRAY[mid..],
+        )?;
         self.write_reg_mask(0x1a, 0x00, 0x0c)?;
         self.write_reg_mask(0x12, 0x06, 0xff)?;
         self.write_reg_mask(0x0c, 0x00, 0x0f)?;
@@ -625,6 +642,11 @@ impl Tuner for R828D {
     }
 
     fn set_input_path(&self, path: crate::tuner::InputPath) -> Result<()> {
+        // R820T only has one input path, so this is a no-op for it.
+        if self.tuner_type == TunerType::R820T {
+            return Ok(());
+        }
+
         use crate::tuner::InputPath::*;
         match path {
             Hf => {

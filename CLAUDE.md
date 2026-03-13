@@ -9,7 +9,7 @@ Async Rust RTL-SDR driver. Tokio-native stream architecture. Primary target: RTL
 
 ## Architecture
 - `Device<T>` / `HardwareInterface` trait — raw USB control transfers, I2C bridge
-- `Tuner` trait — pure chip drivers (`tuners/r828d.rs`), no board logic
+- `Tuner` trait — pure chip drivers (`tuners/r82xx.rs`), no board logic
 - `BoardConfig` enum in `tuner.rs` — V4 GPIO / triplexer / notch orchestration lives in `Driver::set_frequency()` in `lib.rs`, never in the tuner chip
 - `SampleStream` — blocking USB thread feeding a `tokio::mpsc` channel
 - `F32Stream` — DSP pipeline: convert → decimate → DC remove → AGC

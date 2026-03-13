@@ -1,4 +1,4 @@
-pub mod r828d;
+pub mod r82xx;
 use crate::error::Result;
 use crate::tuner::{FilterRange, Tuner};
 
