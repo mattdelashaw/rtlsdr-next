@@ -9,7 +9,7 @@ A high-performance, asynchronous, and safety-first Rust driver for RTL2832U-base
 Designed for the modern era (2026+), this driver moves away from the legacy C callback model toward a **Tokio-native Stream** architecture, with specific optimizations for high-bandwidth ARM hosts like the **Raspberry Pi 5**.
 
 > [!CAUTION]
-> This a shameless "vibe-code" project. I wanted to dig into Rust and this seemed like something fun to explore when I realized the gold version C code drivers were circa 2013. Since starting, I realized there is a human driven Rust implementation here: https://github.com/ccostes/rtl-sdr-rs
+> This a shameless "vibe-code" project. I wanted to dig into Rust and this seemed like something fun to explore when I realized the gold version C code drivers were circa 2013. Since starting, I realized there is a Rust implementation that has a more human touch here: https://github.com/ccostes/rtl-sdr-rs
 
 ## ✅ Confirmed Working Hardware
 
@@ -229,7 +229,7 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 ### Tuner Datasheets and Drivers
 
 **Another Rust Implementation**
-- [RTL-SDR-RS](https://github.com/ccostes/rtl-sdr-rs) - probably human driven project
+- [RTL-SDR-RS](https://github.com/ccostes/rtl-sdr-rs) - probably human community driven project
 
 **Rafael Micro R820T / R820T2 / R828D**
 - [R820T Datasheet (leaked draft)](https://github.com/josebury/R820T-Datasheet/blob/master/R820T_Datasheet-Non_Disclosure_Working_Draft.pdf) — gold standard for register maps
