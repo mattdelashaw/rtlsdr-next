@@ -100,7 +100,7 @@ mod tests {
         assert_eq!(plan.tuner_hz, 35_800_000);
         assert!(plan.spectral_inv);
         assert_eq!(plan.input_path, Some(InputPath::Hf));
-        assert!(plan.in_notch); // 7 MHz is outside AM notch but in_notch handles <= 2.2MHz
+        assert!(!plan.in_notch); // 7 MHz is outside all notch bands
     }
 
     #[test]
