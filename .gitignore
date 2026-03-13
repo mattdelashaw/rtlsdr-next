@@ -1,1 +1,7 @@
+# engineering team
+.claude/settings.local.json
+.claude/.session_*
+
+# duh
 /target
+

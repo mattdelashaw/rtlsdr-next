@@ -1,0 +1,40 @@
+# rtlsdr-next
+
+Async Rust RTL-SDR driver. Tokio-native stream architecture. Primary target: RTL-SDR Blog V4 on Raspberry Pi 5 (aarch64).
+
+## Stack
+- Rust edition 2024, stable toolchain
+- `rusb` for USB, `tokio` for async, `parking_lot` for sync primitives
+- `criterion` for benchmarks, `env_logger` for logging
+
+## Architecture
+- `Device<T>` / `HardwareInterface` trait — raw USB control transfers, I2C bridge
+- `Tuner` trait — pure chip drivers (`tuners/r828d.rs`), no board logic
+- `BoardConfig` enum in `tuner.rs` — V4 GPIO / triplexer / notch orchestration lives in `Driver::set_frequency()` in `lib.rs`, never in the tuner chip
+- `SampleStream` — blocking USB thread feeding a `tokio::mpsc` channel
+- `F32Stream` — DSP pipeline: convert → decimate → DC remove → AGC
+- `PooledBuffer<B>` — zero-allocation buffer pool; Drop uses `try_send` with thread fallback, never silently drops
+
+## Commands
+- Build: `cargo build --release`
+- Test: `cargo test --release`
+- Bench (Rust only): `cargo bench --bench dsp_bench`
+- Bench vs C: `RUSTFLAGS="-C target-cpu=native" cargo bench --bench vs_librtlsdr_bench --features bench-c`
+- Pi native build: `RUSTFLAGS="-C target-cpu=native" cargo build --release`
+
+## Rules
+- Use `parking_lot::Mutex` everywhere — never `std::sync::Mutex` in new code
+- Never hold any mutex across an `.await` point
+- Buffer pool: never use bare `try_send` to return buffers in `Drop` — use the fallback pattern in `PooledBuffer`
+- All hardware errors must propagate — no silent `let _ =` on ops that affect observable state (frequency, gain)
+- WebSocket hardware commands must send a confirmation or error frame back to the client
+- Audio bytes sent over WebSocket use `to_le_bytes()` — never raw pointer casting
+
+## Key Constants
+- R820T I2C: `0x34`, R828D I2C: `0x74`, check val: `0x69`
+- V4 xtal: `28_800_000 Hz`, generic xtal: `16_000_000 Hz`
+- Demod dummy read after every write: `page 0x0a reg 0x01`
+- I2C max chunk: 7 bytes data + 1 byte reg per transfer
+
+@.claude/rules/hardware.md
+@.claude/rules/dsp.md
