@@ -18,9 +18,9 @@ use tokio::sync::{Mutex, broadcast};
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum Command {
-    SetFrequency { hz: u64 },
-    SetGain { db: f32 },
-    SetDemod { mode: String }, // "fm", "am", "off"
+    Frequency { hz: u64 },
+    Gain { db: f32 },
+    Demod { mode: String }, // "fm", "am", "off"
 }
 
 #[derive(Serialize, Debug)]
@@ -99,7 +99,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
         (
             d.info.clone(),
             d.frequency,
-            d.tuner.get_gain().unwrap_or_else(|_| 0.0),
+            d.tuner.get_gain().unwrap_or(0.0),
         )
     };
 
@@ -166,7 +166,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
             if let Ok(cmd) = serde_json::from_str::<Command>(&text) {
                 let mut d = cmd_driver.lock().await;
                 match cmd {
-                    Command::SetFrequency { hz } => match d.set_frequency(hz) {
+                    Command::Frequency { hz } => match d.set_frequency(hz) {
                         Ok(actual) => {
                             let reply = serde_json::json!({
                                 "type": "freqconfirm",
@@ -192,7 +192,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 .await;
                         }
                     },
-                    Command::SetGain { db } => match d.tuner.set_gain(db) {
+                    Command::Gain { db } => match d.tuner.set_gain(db) {
                         Ok(actual) => {
                             let reply = serde_json::json!({
                                 "type": "gainconfirm",
@@ -217,7 +217,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 .await;
                         }
                     },
-                    Command::SetDemod { .. } => { /* TODO: Dynamic switch */ }
+                    Command::Demod { .. } => { /* TODO: Dynamic switch */ }
                 }
             }
         }
@@ -263,10 +263,10 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
 
             // Shift (center DC) and convert to magnitude bytes
             let mut mag = vec![0u8; fft_size];
-            for i in 0..fft_size {
+            for (i, m) in mag.iter_mut().enumerate().take(fft_size) {
                 let shifted = (i + fft_size / 2) % fft_size;
                 let val = (buffer[shifted].norm().log10() * 20.0 + 60.0).clamp(0.0, 255.0);
-                mag[i] = val as u8;
+                *m = val as u8;
             }
             let _ = state.waterfall_tx.send(mag);
         }

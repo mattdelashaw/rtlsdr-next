@@ -428,7 +428,7 @@ impl R828D {
         let mut div_num: u8 = 0;
         while mix_div <= 64 {
             let vco = lo_freq_hz * mix_div;
-            if vco >= VCO_MIN && vco < VCO_MAX {
+            if (VCO_MIN..VCO_MAX).contains(&vco) {
                 let mut div_buf = mix_div;
                 while div_buf > 2 {
                     div_buf >>= 1;

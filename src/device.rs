@@ -202,10 +202,9 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
     }
 
     fn read_bulk(&self, ep: u8, buf: &mut [u8], timeout: Duration) -> Result<usize> {
-        Ok(self
-            .handle
+        self.handle
             .read_bulk(ep, buf, timeout)
-            .map_err(Error::Usb)?)
+            .map_err(Error::Usb)
     }
 
     fn set_gpio_output(&self, gpio: u8) -> Result<()> {
@@ -229,18 +228,17 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
         self.set_i2c_repeater(true)?;
         let mut found = TunerType::Unknown(0);
         // Probing 0x34
-        if let Ok(res) = self.i2c_read_tuner(registers::tuner_ids::R82XX_I2C_ADDR, 0x00, 1) {
-            if res[0] == 0x69 {
-                found = TunerType::R820T;
-            }
+        if let Ok(res) = self.i2c_read_tuner(registers::tuner_ids::R82XX_I2C_ADDR, 0x00, 1)
+            && res[0] == 0x69
+        {
+            found = TunerType::R820T;
         }
         // Probing 0x74
-        if matches!(found, TunerType::Unknown(_)) {
-            if let Ok(res) = self.i2c_read_tuner(registers::tuner_ids::R828D_I2C_ADDR, 0x00, 1) {
-                if res[0] == 0x69 {
-                    found = TunerType::R828D;
-                }
-            }
+        if matches!(found, TunerType::Unknown(_))
+            && let Ok(res) = self.i2c_read_tuner(registers::tuner_ids::R828D_I2C_ADDR, 0x00, 1)
+            && res[0] == 0x69
+        {
+            found = TunerType::R828D;
         }
         if matches!(found, TunerType::Unknown(_)) {
             let _ = self.set_gpio_output(4);

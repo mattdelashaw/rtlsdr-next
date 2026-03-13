@@ -150,11 +150,11 @@ impl Driver {
         };
 
         // 4. Board-level triplexer switching (V4 only).
-        if let Some(path) = self.board.input_path(hz) {
-            if let Err(e) = self.apply_input_path(hz, path) {
-                log::error!("Failed to apply V4 input path: {:?}", e);
-                return Err(e);
-            }
+        if let Some(path) = self.board.input_path(hz)
+            && let Err(e) = self.apply_input_path(hz, path)
+        {
+            log::error!("Failed to apply V4 input path: {:?}", e);
+            return Err(e);
         }
 
         // 5. Sync demodulator IF.

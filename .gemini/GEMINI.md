@@ -42,3 +42,7 @@ This project is a high-performance, async-native Rust driver for RTL2832U-based 
 - **Performance:** Prioritize zero-allocation and SIMD in the "hot path" (streaming/DSP).
 - **Safety:** Leverage `rusb` for safe USB handling but maintain "C-like" precision for hardware registers.
 - **Async:** Everything should be compatible with the `Tokio` runtime.
+
+## Gemini Added Memories
+- Always propose an approach and ask for confirmation before implementing changes for Inquiries. Only act autonomously when given a direct command (e.g., 'hey go do X').
+

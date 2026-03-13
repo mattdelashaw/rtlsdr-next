@@ -9,7 +9,7 @@
 //! This module provides:
 //!   - `design_lowpass`  — windowed-sinc FIR coefficient generator
 //!   - `Decimator`       — stateful FIR+decimate with history overlap buffer
-//!                         (handles block boundaries correctly)
+//!     (handles block boundaries correctly)
 //!   - NEON fast-path on aarch64, scalar fallback everywhere else
 //!
 //! # RTL-SDR usage
@@ -33,7 +33,7 @@
 ///
 /// - `num_taps`:  must be odd for a symmetric Type-I filter
 /// - `cutoff`:    normalised cutoff, 0.0 < cutoff < 0.5
-///                (e.g. 0.05 = fc/fs = 102.4 kHz at 2.048 MSPS)
+///   (e.g. 0.05 = fc/fs = 102.4 kHz at 2.048 MSPS)
 ///
 /// Returns `num_taps` coefficients that sum to 1.0.
 pub fn design_lowpass(num_taps: usize, cutoff: f32) -> Vec<f32> {
@@ -151,7 +151,7 @@ impl Decimator {
 
     /// Process a block of samples and return a new Vec.
     pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
-        let output_len = (input.len().saturating_sub(self.phase) + self.factor - 1) / self.factor;
+        let output_len = input.len().saturating_sub(self.phase).div_ceil(self.factor);
         let mut output = Vec::with_capacity(output_len);
         self.process_into(input, &mut output);
         output

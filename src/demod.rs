@@ -109,7 +109,7 @@ pub fn write_reg_direct(hw: &dyn HardwareInterface, page: u8, addr: u16, val: u8
 }
 
 pub fn set_if_freq_xtal(hw: &dyn HardwareInterface, if_hz: u32, xtal_hz: u32) -> Result<()> {
-    let if_freq = ((if_hz as i64 * (1i64 << 22)) / xtal_hz as i64) * (-1);
+    let if_freq = -((if_hz as i64 * (1i64 << 22)) / xtal_hz as i64);
     let val = (if_freq & 0x3fffff) as u32;
     hw.demod_write_reg(demod::P1_PAGE, 0x19, ((val >> 16) & 0x3f) as u8)?;
     hw.demod_write_reg(demod::P1_PAGE, 0x1a, ((val >> 8) & 0xff) as u8)?;

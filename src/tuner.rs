@@ -36,8 +36,8 @@ impl BoardConfig {
             BoardConfig::Generic => false,
             BoardConfig::BlogV4 => {
                 freq_hz <= 2_200_000
-                    || (freq_hz >= 85_000_000 && freq_hz <= 112_000_000)
-                    || (freq_hz >= 172_000_000 && freq_hz <= 242_000_000)
+                    || (85_000_000..=112_000_000).contains(&freq_hz)
+                    || (172_000_000..=242_000_000).contains(&freq_hz)
             }
         }
     }

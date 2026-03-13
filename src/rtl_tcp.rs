@@ -140,7 +140,7 @@ async fn handle_client(
                 // 0x08: set RTL AGC mode (demod AGC) — ignore for now
                 // 0x09: set direct sampling — ignore (V4 handles this internally)
                 // 0x0a: set offset tuning — ignore
-                0x08 | 0x09 | 0x0a => {}
+                0x08..=0x0a => {}
                 0x0e => {
                     let _ = d.set_bias_t(arg != 0);
                 }
