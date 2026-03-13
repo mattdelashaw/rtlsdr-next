@@ -50,4 +50,4 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-// The following variants are used by stream.rs, r828d.rs, and websdr server.
+// The following variants are used by stream.rs, r82xx.rs, and websdr server.

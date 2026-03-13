@@ -75,18 +75,35 @@ impl Driver {
         let tuner_type = hw.probe_tuner()?;
         log::info!("Detected tuner chip: {:?}", tuner_type);
 
-        let xtal_hz: u64 = match board {
+        let mut xtal_hz: u64 = match board {
             BoardConfig::BlogV4 => 28_800_000,
             BoardConfig::Generic => 16_000_000,
         };
 
+        // Most R820T/R828D sticks (even generic) use 28.8 MHz.
+        if matches!(tuner_type, TunerType::R820T | TunerType::R828D) {
+            xtal_hz = 28_800_000;
+        }
+
         let tuner: Box<dyn Tuner> = match tuner_type {
-            TunerType::R820T | TunerType::R828D => {
-                Box::new(tuners::r828d::R828D::new(device.clone(), xtal_hz))
-            }
-            TunerType::Unknown(_) if info.is_v4 => {
-                Box::new(tuners::r828d::R828D::new(device.clone(), xtal_hz))
-            }
+            TunerType::R820T => Box::new(tuners::r82xx::R82xx::new(
+                device.clone(),
+                tuner_type,
+                registers::tuner_ids::R82XX_I2C_ADDR,
+                xtal_hz,
+            )),
+            TunerType::R828D => Box::new(tuners::r82xx::R82xx::new(
+                device.clone(),
+                tuner_type,
+                registers::tuner_ids::R828D_I2C_ADDR,
+                xtal_hz,
+            )),
+            TunerType::Unknown(_) if info.is_v4 => Box::new(tuners::r82xx::R82xx::new(
+                device.clone(),
+                TunerType::R828D,
+                registers::tuner_ids::R828D_I2C_ADDR,
+                xtal_hz,
+            )),
             _ => {
                 return Err(Error::UnsupportedTuner(format!(
                     "{:?} not yet supported",
