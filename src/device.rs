@@ -202,9 +202,7 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
     }
 
     fn read_bulk(&self, ep: u8, buf: &mut [u8], timeout: Duration) -> Result<usize> {
-        self.handle
-            .read_bulk(ep, buf, timeout)
-            .map_err(Error::Usb)
+	self.handle.read_bulk(ep, buf, timeout).map_err(Error::Usb)
     }
 
     fn set_gpio_output(&self, gpio: u8) -> Result<()> {
