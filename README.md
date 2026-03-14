@@ -16,7 +16,6 @@ Designed for the modern era (2026+), this driver moves away from the legacy C ca
 | Dongle | Tuner | Host | Clients Tested |
 |--------|-------|------|----------------|
 | RTL-SDR Blog V4 | R828D | Raspberry Pi 5 (Bookworm) | OpenWebRX+, GQRX |
-| Generic V3 / Nano | R820T2 / E4000 | Generic Linux / macOS | GQRX |
 
 Other RTL2832U dongles with R820T/R820T2 tuners should work — hardware verification welcome.
 
