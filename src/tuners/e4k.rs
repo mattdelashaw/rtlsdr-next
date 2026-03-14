@@ -44,7 +44,7 @@ struct PllVar {
     mul: u8,
 }
 
-#[allow(clippy::style)]
+#[rustfmt::skip]
 static PLL_VARS: [PllVar; 9] = [
     PllVar { freq: 724_000_000, div: 4, mul: 0x00 },
     PllVar { freq: 482_000_000, div: 6, mul: 0x01 },
@@ -194,9 +194,9 @@ impl Tuner for E4k {
         } else {
             7
         };
-        
+
         self.write_reg(E4K_REG_SYNTH1, band << 1)?;
-        
+
         // PLL Parameters
         if z > 255 {
             return Err(Error::InvalidFrequency(hz));
