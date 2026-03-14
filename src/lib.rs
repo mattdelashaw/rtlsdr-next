@@ -85,7 +85,10 @@ impl Driver {
         };
 
         // Most R820T/R828D/E4000 sticks (even generic) use 28.8 MHz.
-        if matches!(tuner_type, TunerType::R820T | TunerType::R828D | TunerType::E4000) {
+        if matches!(
+            tuner_type,
+            TunerType::R820T | TunerType::R828D | TunerType::E4000
+        ) {
             xtal_hz = 28_800_000;
         }
 
@@ -129,7 +132,11 @@ impl Driver {
         }
 
         // ── 6. Demodulator sync ────────────────────────────────────────────
-        let initial_if = if tuner_type == TunerType::E4000 { 0 } else { 2_300_000u32 };
+        let initial_if = if tuner_type == TunerType::E4000 {
+            0
+        } else {
+            2_300_000u32
+        };
         tuner.set_if_freq(initial_if as u64)?;
 
         demod::reset_demod(hw)?;
@@ -236,7 +243,7 @@ impl Driver {
     pub fn set_sample_rate(&mut self, rate_hz: u32) -> Result<()> {
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
-        
+
         let current_if = self.tuner.get_if_freq();
         let if_hz = if current_if > 0 {
             if rate_hz < 2_500_000 {

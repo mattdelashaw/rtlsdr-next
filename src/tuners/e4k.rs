@@ -44,6 +44,7 @@ struct PllVar {
     mul: u8,
 }
 
+#[allow(clippy::style)]
 static PLL_VARS: [PllVar; 9] = [
     PllVar { freq: 724_000_000, div: 4, mul: 0x00 },
     PllVar { freq: 482_000_000, div: 6, mul: 0x01 },
@@ -105,7 +106,7 @@ impl E4k {
                     1 => (0x01, 0, (db / 6).clamp(0, 1) as u8), // -3 or 6dB
                     2 => (0x06, 1, (db / 3).clamp(0, 3) as u8), // 0, 3, 6, 9dB
                     3 => (0x18, 3, (db / 3).clamp(0, 3) as u8), // 0, 3, 6, 9dB
-                    4 => (0x60, 5, db.clamp(0, 3) as u8), // 0, 1, 2dB
+                    4 => (0x60, 5, db.clamp(0, 3) as u8),       // 0, 1, 2dB
                     _ => unreachable!(),
                 };
                 self.write_reg(reg, (current & !mask) | (val << shift))
@@ -128,7 +129,7 @@ impl Tuner for E4k {
 
         // 1. Reset
         self.write_reg(E4K_REG_MASTER1, 0x01)?;
-        
+
         // 2. Clock config
         self.write_reg(E4K_REG_CLK_INP, 0x00)?;
         self.write_reg(E4K_REG_REF_CLK, 0x00)?; // Use reference clock directly
@@ -147,7 +148,7 @@ impl Tuner for E4k {
         self.write_reg(E4K_REG_FILT1, 0x03)?; // Default RF filter
         self.write_reg(E4K_REG_FILT2, 0x04)?; // Default Mixer filter
         self.write_reg(E4K_REG_FILT3, 0x01)?; // Enable channel filter
-        
+
         self.set_gain(20.0)?; // Default gain
 
         // 5. Trigger DC offset calibration
@@ -158,7 +159,7 @@ impl Tuner for E4k {
 
     fn set_frequency(&self, hz: u64) -> Result<u64> {
         let f_osc = *self.xtal_freq.lock();
-        
+
         // Find the first divider whose range ceiling is greater than our frequency.
         // The table is ordered by frequency ceilings.
         let var = PLL_VARS
@@ -176,14 +177,23 @@ impl Tuner for E4k {
 
         // Band selection (Synth1) - RF filter bank selection.
         // Note: Breakpoints are approximate based on common Osmocom/librtlsdr implementations.
-        let band = if hz <= 140_000_000 { 0 }
-                  else if hz <= 350_000_000 { 1 }
-                  else if hz <= 467_000_000 { 2 }
-                  else if hz <= 657_000_000 { 3 }
-                  else if hz <= 930_000_000 { 4 }
-                  else if hz <= 1_260_000_000 { 5 }
-                  else if hz <= 1_610_000_000 { 6 }
-                  else { 7 };
+        let band = if hz <= 140_000_000 {
+            0
+        } else if hz <= 350_000_000 {
+            1
+        } else if hz <= 467_000_000 {
+            2
+        } else if hz <= 657_000_000 {
+            3
+        } else if hz <= 930_000_000 {
+            4
+        } else if hz <= 1_260_000_000 {
+            5
+        } else if hz <= 1_610_000_000 {
+            6
+        } else {
+            7
+        };
         
         self.write_reg(E4K_REG_SYNTH1, band << 1)?;
         
@@ -194,7 +204,7 @@ impl Tuner for E4k {
         self.write_reg(E4K_REG_SYNTH3, z as u8)?;
         self.write_reg(E4K_REG_SYNTH4, (x & 0xff) as u8)?;
         self.write_reg(E4K_REG_SYNTH5, ((x >> 8) & 0xff) as u8)?;
-        
+
         // Divider (Synth7)
         let mut synth7 = var.mul;
         if hz < 350_000_000 {
@@ -227,7 +237,7 @@ impl Tuner for E4k {
             self.set_if_gain(stage, stage_gain)?;
             rem = rem.saturating_sub(stage_gain);
         }
-        
+
         let actual = actual_tenths as f32 / 10.0;
         *self.current_gain.lock() = actual;
         Ok(actual)

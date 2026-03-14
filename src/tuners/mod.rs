@@ -1,5 +1,5 @@
-pub mod r82xx;
 pub mod e4k;
+pub mod r82xx;
 use crate::error::Result;
 use crate::tuner::{FilterRange, Tuner};
 
