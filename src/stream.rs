@@ -5,15 +5,28 @@ use rusb::UsbContext;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::converter;
 use crate::dsp::Decimator;
 
 const BULK_ENDPOINT: u8 = 0x81;
-const BUFFER_SIZE: usize = 256 * 1024; // 256KB buffers
-const NUM_BUFFERS: usize = 16;
+
+#[derive(Clone, Copy, Debug)]
+pub struct StreamConfig {
+    pub num_buffers: usize,
+    pub buffer_size: usize,
+}
+
+impl Default for StreamConfig {
+    fn default() -> Self {
+        Self {
+            num_buffers: 16,
+            buffer_size: 256 * 1024,
+        }
+    }
+}
 
 /// A generic buffer that automatically returns itself to a pool when dropped.
 pub struct PooledBuffer<B: Send + 'static> {
@@ -70,18 +83,23 @@ impl<B: Send + 'static> Drop for PooledBuffer<B> {
 /// A stream of raw interleaved U8 samples (I, Q, I, Q...).
 pub struct SampleStream<T: UsbContext + 'static> {
     receiver: mpsc::Receiver<crate::Result<PooledBuffer<TransportBuffer<T>>>>,
+    flush_rx: broadcast::Receiver<()>,
     pub(crate) cancel_token: CancellationToken,
 }
 
 impl<T: UsbContext + 'static> SampleStream<T> {
-    pub fn new(device: Arc<Device<T>>) -> Self {
-        let (tx, rx) = mpsc::channel(NUM_BUFFERS);
-        let (pool_tx, mut pool_rx) = mpsc::channel::<TransportBuffer<T>>(NUM_BUFFERS);
+    pub fn new(
+        device: Arc<Device<T>>,
+        flush_rx: broadcast::Receiver<()>,
+        config: StreamConfig,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel(config.num_buffers);
+        let (pool_tx, mut pool_rx) = mpsc::channel::<TransportBuffer<T>>(config.num_buffers);
 
         // Pre-fill the pool with DMA-capable TransportBuffers
-        for _ in 0..NUM_BUFFERS {
+        for _ in 0..config.num_buffers {
             // Each buffer holds an Arc to the device
-            let buf = TransportBuffer::new(device.clone(), BUFFER_SIZE);
+            let buf = TransportBuffer::new(device.clone(), config.buffer_size);
             let _ = pool_tx.try_send(buf);
         }
 
@@ -133,12 +151,29 @@ impl<T: UsbContext + 'static> SampleStream<T> {
 
         Self {
             receiver: rx,
+            flush_rx,
             cancel_token,
         }
     }
 
     pub async fn next(&mut self) -> Option<crate::Result<PooledBuffer<TransportBuffer<T>>>> {
-        self.receiver.recv().await
+        loop {
+            tokio::select! {
+                // Priority 1: Handle flush signal
+                Ok(_) = self.flush_rx.recv() => {
+                    // Drain all pending buffers from the receiver.
+                    // Dropping each PooledBuffer here triggers its Drop impl, which
+                    // asynchronously returns the TransportBuffer to the pool. This 
+                    // ensures the pool doesn't starve when we "nuke" stale data.
+                    while let Ok(_) = self.receiver.try_recv() {}
+                    // Continue loop to wait for fresh data
+                }
+                // Priority 2: Return next available buffer
+                res = self.receiver.recv() => {
+                    return res;
+                }
+            }
+        }
     }
 
     pub fn close(&self) {
@@ -168,22 +203,26 @@ pub struct F32Stream<T: UsbContext + 'static> {
 }
 
 impl<T: UsbContext + 'static> F32Stream<T> {
-    pub fn new(raw_stream: SampleStream<T>, decimation_factor: usize) -> Self {
+    pub fn new(
+        raw_stream: SampleStream<T>,
+        decimation_factor: usize,
+        config: StreamConfig,
+    ) -> Self {
         let decimator = if decimation_factor > 1 {
             Some(Decimator::with_factor(decimation_factor))
         } else {
             None
         };
 
-        let (p1_tx, p1_rx) = mpsc::channel(NUM_BUFFERS);
-        for _ in 0..NUM_BUFFERS {
-            let _ = p1_tx.try_send(vec![0.0f32; BUFFER_SIZE]);
+        let (p1_tx, p1_rx) = mpsc::channel(config.num_buffers);
+        for _ in 0..config.num_buffers {
+            let _ = p1_tx.try_send(vec![0.0f32; config.buffer_size]);
         }
 
-        let (p2_tx, p2_rx) = mpsc::channel(NUM_BUFFERS);
+        let (p2_tx, p2_rx) = mpsc::channel(config.num_buffers);
         if decimation_factor > 1 {
-            let decimated_size = BUFFER_SIZE / decimation_factor + 16;
-            for _ in 0..NUM_BUFFERS {
+            let decimated_size = config.buffer_size / decimation_factor + 16;
+            for _ in 0..config.num_buffers {
                 let _ = p2_tx.try_send(vec![0.0f32; decimated_size]);
             }
         }

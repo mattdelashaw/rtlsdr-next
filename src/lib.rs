@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
 pub mod demod;
 pub mod device;
@@ -20,7 +21,7 @@ pub use device::{Device, DeviceInfo};
 pub use error::{Error, Result};
 pub use rtl_tcp::TcpServer;
 pub use server::SharingServer;
-pub use stream::{F32Stream, PooledBuffer, SampleStream};
+pub use stream::{F32Stream, PooledBuffer, SampleStream, StreamConfig};
 pub use tuner::{BoardConfig, FilterRange, InputPath, Tuner};
 
 pub struct Driver {
@@ -31,6 +32,9 @@ pub struct Driver {
     pub sample_rate: u32,
     pub frequency: u64,
     pub ppm: i32,
+    pub nominal_xtal: u32,
+    pub stream_config: StreamConfig,
+    flush_tx: broadcast::Sender<()>,
 }
 
 use tuner::BoardOrchestrator;
@@ -132,6 +136,7 @@ impl Driver {
         demod::start_streaming(hw)?;
 
         log::info!("RTL-SDR driver ready");
+        let (flush_tx, _) = broadcast::channel(16);
         Ok(Self {
             device,
             info,
@@ -140,6 +145,9 @@ impl Driver {
             sample_rate: DEFAULT_SAMPLE_RATE,
             frequency: 0,
             ppm: 0,
+            nominal_xtal: xtal_hz as u32,
+            stream_config: StreamConfig::default(),
+            flush_tx,
         })
     }
 
@@ -192,6 +200,10 @@ impl Driver {
             actual,
             plan.spectral_inv
         );
+
+        // Notify streams to flush old buffers
+        let _ = self.flush_tx.send(());
+
         Ok(actual)
     }
 
@@ -260,17 +272,21 @@ impl Driver {
     }
 
     fn corrected_xtal_hz(&self) -> u32 {
-        let nominal = 28_800_000i64;
+        let nominal = self.nominal_xtal as i64;
         let offset = (nominal * self.ppm as i64) / 1_000_000;
         (nominal + offset) as u32
     }
 
     pub fn stream(&self) -> SampleStream<rusb::Context> {
-        SampleStream::new(self.device.clone())
+        SampleStream::new(
+            self.device.clone(),
+            self.flush_tx.subscribe(),
+            self.stream_config,
+        )
     }
 
     pub fn stream_f32(&self, factor: usize) -> F32Stream<rusb::Context> {
-        F32Stream::new(self.stream(), factor)
+        F32Stream::new(self.stream(), factor, self.stream_config)
     }
 
     pub async fn start_sharing<P: AsRef<std::path::Path>>(&self, path: P) -> Result<SharingServer> {

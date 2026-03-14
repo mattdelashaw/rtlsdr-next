@@ -1,12 +1,12 @@
 /// Converts interleaved RTL-SDR u8 samples (offset binary, I,Q,I,Q...)
 /// into interleaved f32 complex samples centered at 0.0.
 ///
-/// RTL-SDR offset binary: 0 = -1.0, 127 = ~0.0, 255 = +1.0
-/// Formula: f = (u8 - 127.0) / 128.0
+/// RTL-SDR offset binary: 0 = -1.0, 127.5 = 0.0, 255 = +1.0
+/// Formula: f = (u8 - 127.5) / 127.5
 ///
 /// Performance Analysis:
-///   - librtlsdr (LUT):     142µs   1.82 GB/s
-///   - rtlsdr-next:          91µs   2.88 GB/s  (1.56x faster)
+///   - librtlsdr (LUT):    ~172µs   1.42 GB/s
+///   - rtlsdr-next:         ~164µs   1.49 GB/s  (Pi 5)
 ///
 /// On modern out-of-order CPUs like the Cortex-A76 (Pi 5), the conversion is
 /// memory-bandwidth-bound. Reading 256KB of u8 and writing 1MB of f32 saturates
@@ -15,7 +15,7 @@
 /// waiting on the memory bus, not the ALU.
 ///
 /// By using direct arithmetic instead of the legacy 256-entry lookup table,
-/// we avoid the cache latency of table fetches and achieve a ~1.5x throughput
+/// we avoid the cache latency of table fetches and achieve a performance
 /// gain while remaining entirely portable.
 pub trait Converter: Send + Sync {
     /// Convert interleaved u8 samples to interleaved f32 samples.
@@ -51,7 +51,7 @@ impl Converter for ScalarConverter {
 #[inline]
 fn scalar_convert(src: &[u8], dst: &mut [f32]) {
     for (d, &s) in dst.iter_mut().zip(src.iter()) {
-        *d = (s as f32 - 127.0) / 128.0;
+        *d = (s as f32 - 127.5) / 127.5;
     }
 }
 
@@ -59,8 +59,8 @@ fn scalar_convert(src: &[u8], dst: &mut [f32]) {
 fn scalar_convert_inverted(src: &[u8], dst: &mut [f32]) {
     // Process in I/Q pairs to handle inversion efficiently in a single pass.
     for (s, d) in src.chunks_exact(2).zip(dst.chunks_exact_mut(2)) {
-        d[0] = (s[0] as f32 - 127.0) / 128.0; // I
-        d[1] = -(s[1] as f32 - 127.0) / 128.0; // -Q
+        d[0] = (s[0] as f32 - 127.5) / 127.5; // I
+        d[1] = -(s[1] as f32 - 127.5) / 127.5; // -Q
     }
 }
 
@@ -112,7 +112,12 @@ mod tests {
 
     #[test]
     fn test_center_value() {
-        check(&[127], &[0.0]);
+        // With 127.5, 127 is slightly negative, 128 is slightly positive.
+        let mut output = [0.0f32; 2];
+        ScalarConverter.convert(&[127, 128], &mut output);
+        assert!(output[0] < 0.0);
+        assert!(output[1] > 0.0);
+        assert!((output[0] + output[1]).abs() < EPS);
     }
 
     #[test]
@@ -122,30 +127,30 @@ mod tests {
 
     #[test]
     fn test_min_value() {
-        check(&[0], &[-127.0 / 128.0]);
+        check(&[0], &[-1.0]);
     }
 
     #[test]
     fn test_batch_boundary_values() {
         check(
-            &[127, 255, 0, 64],
-            &[0.0, 1.0, -127.0 / 128.0, (64.0 - 127.0) / 128.0],
+            &[255, 0, 127],
+            &[1.0, -1.0, (127.0 - 127.5) / 127.5],
         );
     }
 
     #[test]
     fn test_batch_patterns() {
-        let input: Vec<u8> = (0u8..255).collect();
-        let expected: Vec<f32> = input.iter().map(|&v| (v as f32 - 127.0) / 128.0).collect();
+        let input: Vec<u8> = (0u8..=255).collect();
+        let expected: Vec<f32> = input.iter().map(|&v| (v as f32 - 127.5) / 127.5).collect();
         check(&input, &expected);
     }
 
     #[test]
     fn test_convert_inverted() {
-        let input = vec![127u8, 255, 0, 200];
-        // Standard: [0.0, 1.0, -127.0/128.0, (200.0-127.0)/128.0]
-        // Inverted: [0.0, -1.0, -127.0/128.0, -(200.0-127.0)/128.0]
-        let expected = vec![0.0, -1.0, -127.0 / 128.0, -(200.0 - 127.0) / 128.0];
+        let input = vec![255u8, 0];
+        // Standard: [1.0, -1.0]
+        // Inverted: [1.0, 1.0]
+        let expected = vec![1.0, 1.0];
         let mut output = vec![0.0f32; input.len()];
         convert_inverted(&input, &mut output);
         for (i, (&a, &e)) in output.iter().zip(expected.iter()).enumerate() {

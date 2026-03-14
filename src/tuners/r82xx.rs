@@ -352,6 +352,7 @@ pub struct R82xx {
     tuner_type: TunerType,
     i2c_addr: u8,
     regs: Mutex<[u8; NUM_REGS]>,
+    nominal_xtal: u64,
     xtal_freq: Mutex<u64>,
     has_lock: Mutex<bool>,
     current_gain: Mutex<f32>,
@@ -375,6 +376,7 @@ impl R82xx {
             tuner_type,
             i2c_addr,
             regs: Mutex::new(INIT_ARRAY),
+            nominal_xtal: xtal_hz,
             xtal_freq: Mutex::new(xtal_hz),
             has_lock: Mutex::new(false),
             current_gain: Mutex::new(0.0),
@@ -628,7 +630,7 @@ impl Tuner for R82xx {
     }
 
     fn set_ppm(&self, ppm: i32) -> Result<()> {
-        let nominal = *self.xtal_freq.lock();
+        let nominal = self.nominal_xtal;
         let offset = (nominal as i64 * ppm as i64) / 1_000_000;
         *self.xtal_freq.lock() = (nominal as i64 + offset) as u64;
         Ok(())

@@ -115,44 +115,41 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
     let mut waterfall_rx = state.waterfall_tx.subscribe();
     let mut audio_rx = state.audio_tx.subscribe();
 
-    let (sender, mut receiver) = socket.split();
+    let (mut sink, mut receiver) = socket.split();
+    let (ws_send_tx, mut ws_send_rx) = tokio::sync::mpsc::channel::<Message>(128);
 
-    // Task: Push waterfall (binary)
-    let sender_shared = Arc::new(Mutex::new(sender));
-
-    let s1 = sender_shared.clone();
-    let mut waterfall_task = tokio::spawn(async move {
-        while let Ok(data) = waterfall_rx.recv().await {
-            let mut msg = vec![b'W'];
-            msg.extend_from_slice(&data);
-            if s1
-                .lock()
-                .await
-                .send(Message::Binary(msg.into()))
-                .await
-                .is_err()
-            {
+    // Task: Unified WebSocket Sink
+    let mut sink_task = tokio::spawn(async move {
+        while let Some(msg) = ws_send_rx.recv().await {
+            if sink.send(msg).await.is_err() {
                 break;
             }
         }
     });
 
-    let s2 = sender_shared.clone();
+    // Task: Push waterfall (binary)
+    let waterfall_tx = ws_send_tx.clone();
+    let mut waterfall_task = tokio::spawn(async move {
+        while let Ok(data) = waterfall_rx.recv().await {
+            let mut msg = vec![b'W'];
+            msg.extend_from_slice(&data);
+            if waterfall_tx.send(Message::Binary(msg.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Task: Push audio (binary)
+    let audio_tx = ws_send_tx.clone();
     let mut audio_task = tokio::spawn(async move {
         while let Ok(data) = audio_rx.recv().await {
-            // Explicit Little-Endian conversion (safe and cross-platform)
+            // Explicit Little-Endian conversion
             let mut msg = Vec::with_capacity(1 + data.len() * 4);
             msg.push(b'A');
             for &sample in data.iter() {
                 msg.extend_from_slice(&sample.to_le_bytes());
             }
-            if s2
-                .lock()
-                .await
-                .send(Message::Binary(msg.into()))
-                .await
-                .is_err()
-            {
+            if audio_tx.send(Message::Binary(msg.into())).await.is_err() {
                 break;
             }
         }
@@ -160,7 +157,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
 
     // Task: Process Commands
     let cmd_driver = state.driver.clone();
-    let s_cmd = sender_shared.clone();
+    let cmd_reply_tx = ws_send_tx.clone();
     let mut cmd_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             if let Ok(cmd) = serde_json::from_str::<Command>(&text) {
@@ -173,11 +170,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 "requested": hz,
                                 "actual": actual,
                             });
-                            let _ = s_cmd
-                                .lock()
-                                .await
-                                .send(Message::Text(reply.to_string().into()))
-                                .await;
+                            let _ = cmd_reply_tx.send(Message::Text(reply.to_string().into())).await;
                         }
                         Err(e) => {
                             let reply = serde_json::json!({
@@ -185,11 +178,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 "cmd": "setfrequency",
                                 "msg": e.to_string(),
                             });
-                            let _ = s_cmd
-                                .lock()
-                                .await
-                                .send(Message::Text(reply.to_string().into()))
-                                .await;
+                            let _ = cmd_reply_tx.send(Message::Text(reply.to_string().into())).await;
                         }
                     },
                     Command::Gain { db } => match d.tuner.set_gain(db) {
@@ -198,11 +187,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 "type": "gainconfirm",
                                 "actual": actual,
                             });
-                            let _ = s_cmd
-                                .lock()
-                                .await
-                                .send(Message::Text(reply.to_string().into()))
-                                .await;
+                            let _ = cmd_reply_tx.send(Message::Text(reply.to_string().into())).await;
                         }
                         Err(e) => {
                             let reply = serde_json::json!({
@@ -210,11 +195,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 "cmd": "setgain",
                                 "msg": e.to_string(),
                             });
-                            let _ = s_cmd
-                                .lock()
-                                .await
-                                .send(Message::Text(reply.to_string().into()))
-                                .await;
+                            let _ = cmd_reply_tx.send(Message::Text(reply.to_string().into())).await;
                         }
                     },
                     Command::Demod { .. } => { /* TODO: Dynamic switch */ }
@@ -224,10 +205,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
     });
 
     tokio::select! {
+        _ = &mut sink_task => {},
         _ = &mut waterfall_task => {},
         _ = &mut audio_task => {},
         _ = &mut cmd_task => {},
     }
+    sink_task.abort();
     waterfall_task.abort();
     audio_task.abort();
     cmd_task.abort();
