@@ -84,8 +84,8 @@ impl Driver {
             BoardConfig::Generic => 16_000_000,
         };
 
-        // Most R820T/R828D sticks (even generic) use 28.8 MHz.
-        if matches!(tuner_type, TunerType::R820T | TunerType::R828D) {
+        // Most R820T/R828D/E4000 sticks (even generic) use 28.8 MHz.
+        if matches!(tuner_type, TunerType::R820T | TunerType::R828D | TunerType::E4000) {
             xtal_hz = 28_800_000;
         }
 
@@ -108,6 +108,7 @@ impl Driver {
                 registers::tuner_ids::R828D_I2C_ADDR,
                 xtal_hz,
             )),
+            TunerType::E4000 => Box::new(tuners::e4k::E4k::new(device.clone(), xtal_hz)),
             _ => {
                 return Err(Error::UnsupportedTuner(format!(
                     "{:?} not yet supported",
@@ -118,14 +119,17 @@ impl Driver {
 
         tuner.initialize()?;
 
-        // ── 5. Post-detection demod config for Low-IF ─────────────────────
+        // ── 5. Post-detection demod config for Low-IF / Zero-IF ───────────
         if matches!(tuner_type, TunerType::R820T | TunerType::R828D) || info.is_v4 {
             demod::set_tuner_low_if(hw)?;
+            demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
+        } else if tuner_type == TunerType::E4000 {
+            demod::set_tuner_zero_if(hw)?;
             demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
         }
 
         // ── 6. Demodulator sync ────────────────────────────────────────────
-        let initial_if = 2_300_000u32;
+        let initial_if = if tuner_type == TunerType::E4000 { 0 } else { 2_300_000u32 };
         tuner.set_if_freq(initial_if as u64)?;
 
         demod::reset_demod(hw)?;
@@ -232,10 +236,16 @@ impl Driver {
     pub fn set_sample_rate(&mut self, rate_hz: u32) -> Result<()> {
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
-        let if_hz = if rate_hz < 2_500_000 {
-            2_300_000
+        
+        let current_if = self.tuner.get_if_freq();
+        let if_hz = if current_if > 0 {
+            if rate_hz < 2_500_000 {
+                2_300_000
+            } else {
+                3_570_000
+            }
         } else {
-            3_570_000
+            0
         };
 
         self.tuner.set_if_freq(if_hz)?;

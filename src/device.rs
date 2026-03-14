@@ -238,6 +238,12 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
         {
             found = TunerType::R828D;
         }
+        // Probing 0xc8 (E4000)
+        if matches!(found, TunerType::Unknown(_))
+            && let Ok(_) = self.i2c_read_tuner(registers::tuner_ids::E4000_I2C_ADDR, 0x02, 1)
+        {
+            found = TunerType::E4000;
+        }
         if matches!(found, TunerType::Unknown(_)) {
             let _ = self.set_gpio_output(4);
             let _ = self.set_gpio_bit(4, true);

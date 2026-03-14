@@ -80,10 +80,18 @@ pub fn init_baseband(hw: &dyn HardwareInterface) -> Result<()> {
 }
 
 pub fn set_tuner_low_if(hw: &dyn HardwareInterface) -> Result<()> {
-    // 1. Disable Zero-IF mode
+    // 1. Disable Zero-IF mode (set to Low-IF)
     hw.demod_write_reg(demod::P1_PAGE, 0xb1, 0x1a)?;
     // 2. Enable In-phase ADC input (required for Low-IF)
     hw.demod_write_reg(demod::P0_PAGE, 0x08, 0x4d)?;
+    Ok(())
+}
+
+pub fn set_tuner_zero_if(hw: &dyn HardwareInterface) -> Result<()> {
+    // 1. Enable Zero-IF mode
+    hw.demod_write_reg(demod::P1_PAGE, 0xb1, 0x1b)?;
+    // 2. Disable In-phase ADC input (Standard for Zero-IF)
+    hw.demod_write_reg(demod::P0_PAGE, 0x08, 0x4c)?;
     Ok(())
 }
 

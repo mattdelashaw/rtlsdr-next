@@ -16,6 +16,7 @@ Designed for the modern era (2026+), this driver moves away from the legacy C ca
 | Dongle | Tuner | Host | Clients Tested |
 |--------|-------|------|----------------|
 | RTL-SDR Blog V4 | R828D | Raspberry Pi 5 (Bookworm) | OpenWebRX+, GQRX |
+| Generic V3 / Nano | R820T2 / E4000 | Generic Linux / macOS | GQRX |
 
 Other RTL2832U dongles with R820T/R820T2 tuners should work — hardware verification welcome.
 
@@ -251,9 +252,10 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 - [x] **Phase 6: Auto Probing** — I2C handshake-based tuner detection
 - [x] **Phase 7: Zero-Allocation** — Buffer pooling, in-place processing
 - [x] **Phase 8: rtl_tcp Server** — Compatible with OpenWebRX+, GQRX, SDR#
-- [ ] **Phase 9: Legacy Tuners** — E4000, FC0012/FC0013 register maps
-- [ ] **Phase 10: Cross-Platform** — Windows/macOS testing, x86_64 SIMD (AVX2)
-- [ ] **Phase 11: Configurables** — Runtime buffer sizes, gain modes, bias-T persistence
+- [x] **Phase 9: Elonics E4000** — Full Zero-IF driver with manual gain control
+- [ ] **Phase 10: Fitipower Tuners** — FC0012/FC0013 register maps
+- [ ] **Phase 11: Cross-Platform** — Windows testing, x86_64 SIMD (AVX2)
+- [ ] **Phase 12: Configurables** — Bias-T persistence and AGC modes
 
 ## 📝 Reference Material
 
