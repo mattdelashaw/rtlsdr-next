@@ -165,10 +165,9 @@ impl<T: UsbContext + 'static> SampleStream<T> {
                     // Dropping each PooledBuffer here triggers its Drop impl, which
                     // asynchronously returns the TransportBuffer to the pool. This
                     // ensures the pool doesn't starve when we "nuke" stale data.
-                    while let Ok(_) = self.receiver.try_recv() {}
+                    while self.receiver.try_recv().is_ok() {}
                     // Continue loop to wait for fresh data
-                }
-                // Priority 2: Return next available buffer
+                }                // Priority 2: Return next available buffer
                 res = self.receiver.recv() => {
                     return res;
                 }
