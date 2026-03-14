@@ -59,6 +59,37 @@ Benchmarked on Raspberry Pi 5 (Cortex-A76, aarch64):
 | 33-tap FIR decimator (NEON) | ~670 MSa/s |
 | CPU usage at 2.048 MSPS | < 6% |
 
+## 🎛 Performance Tuning & Latency
+
+### Reducing Frequency Switching Lag
+
+This driver implements a **"Flush-on-Tune"** mechanism. When you change frequency (e.g., click a bookmark), all stale data currently in the driver's buffers is immediately dropped. This makes tuning feel much snappier than standard `librtlsdr`.
+
+However, you may still experience some lag in applications like **Gqrx**. This is because Gqrx maintains its own large internal audio and DSP buffers which we cannot flush.
+
+**For Gqrx Users:**
+- Set **Bandwidth** to `0` (Auto) to avoid unnecessary I2C filter commands.
+- Reduce **Audio Buffer** size in Gqrx settings if audio lags behind the waterfall.
+- If you need ultra-low latency, you can programmatically reduce the driver's buffer count via `StreamConfig`.
+
+**For OpenWebRX Users:**
+- OpenWebRX generally feels snappier because it manages its own pipeline more aggressively and benefits directly from our driver's flush mechanism.
+
+### Advanced Configuration (`StreamConfig`)
+
+You can tune the trade-off between latency and stability by modifying the `StreamConfig` struct when creating a stream:
+
+```rust
+// Adjust configuration on the driver instance
+driver.stream_config = rtlsdr::StreamConfig {
+    num_buffers: 8,          // Default: 16. Lower = less latency, higher risk of drops.
+    buffer_size: 256 * 1024, // Default: 256KB.
+};
+
+// Create the stream with the new settings
+let stream = driver.stream();
+```
+
 ## 📋 Prerequisites
 
 - Rust toolchain (stable)
