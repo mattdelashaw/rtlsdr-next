@@ -133,7 +133,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
         while let Ok(data) = waterfall_rx.recv().await {
             let mut msg = vec![b'W'];
             msg.extend_from_slice(&data);
-            if waterfall_tx.send(Message::Binary(msg.into())).await.is_err() {
+            if waterfall_tx
+                .send(Message::Binary(msg.into()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -170,7 +174,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 "requested": hz,
                                 "actual": actual,
                             });
-                            let _ = cmd_reply_tx.send(Message::Text(reply.to_string().into())).await;
+                            let _ = cmd_reply_tx
+                                .send(Message::Text(reply.to_string().into()))
+                                .await;
                         }
                         Err(e) => {
                             let reply = serde_json::json!({
@@ -178,7 +184,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 "cmd": "setfrequency",
                                 "msg": e.to_string(),
                             });
-                            let _ = cmd_reply_tx.send(Message::Text(reply.to_string().into())).await;
+                            let _ = cmd_reply_tx
+                                .send(Message::Text(reply.to_string().into()))
+                                .await;
                         }
                     },
                     Command::Gain { db } => match d.tuner.set_gain(db) {
@@ -187,7 +195,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 "type": "gainconfirm",
                                 "actual": actual,
                             });
-                            let _ = cmd_reply_tx.send(Message::Text(reply.to_string().into())).await;
+                            let _ = cmd_reply_tx
+                                .send(Message::Text(reply.to_string().into()))
+                                .await;
                         }
                         Err(e) => {
                             let reply = serde_json::json!({
@@ -195,7 +205,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 "cmd": "setgain",
                                 "msg": e.to_string(),
                             });
-                            let _ = cmd_reply_tx.send(Message::Text(reply.to_string().into())).await;
+                            let _ = cmd_reply_tx
+                                .send(Message::Text(reply.to_string().into()))
+                                .await;
                         }
                     },
                     Command::Demod { .. } => { /* TODO: Dynamic switch */ }

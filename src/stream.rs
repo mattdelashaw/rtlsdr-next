@@ -163,7 +163,7 @@ impl<T: UsbContext + 'static> SampleStream<T> {
                 Ok(_) = self.flush_rx.recv() => {
                     // Drain all pending buffers from the receiver.
                     // Dropping each PooledBuffer here triggers its Drop impl, which
-                    // asynchronously returns the TransportBuffer to the pool. This 
+                    // asynchronously returns the TransportBuffer to the pool. This
                     // ensures the pool doesn't starve when we "nuke" stale data.
                     while let Ok(_) = self.receiver.try_recv() {}
                     // Continue loop to wait for fresh data
