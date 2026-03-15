@@ -1,18 +1,31 @@
+//! Unix Domain Socket sharing server.
+//! Only available on Unix — use rtl_tcp for local sharing on Windows.
+
+#[cfg(unix)]
 use log::error;
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use tokio::io::{AsyncWriteExt, Result as IoResult};
+#[cfg(unix)]
 use tokio::net::UnixListener;
+#[cfg(unix)]
 use tokio::sync::broadcast;
+#[cfg(unix)]
 use tokio::task::JoinHandle;
+#[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
 pub struct SharingServer {
     _broadcast_tx: broadcast::Sender<Arc<Vec<u8>>>,
     _handle: JoinHandle<()>,
     cancel_token: CancellationToken,
 }
 
+#[cfg(unix)]
 impl SharingServer {
     /// Start a new sharing server on the specified Unix Domain Socket path.
     pub async fn start<P: AsRef<Path>>(
@@ -39,8 +52,7 @@ impl SharingServer {
                     _ = cancel_clone.cancelled() => break,
                     accept_res = listener.accept() => {
                         match accept_res {
-                            Ok((socket, _)) => {
-                                let mut socket: tokio::net::UnixStream = socket;
+                            Ok((mut socket, _)) => {
                                 let mut client_rx = tx_clone.subscribe();
                                 let cancel_client = cancel_clone.clone();
                                 tokio::spawn(async move {
@@ -82,9 +94,7 @@ impl SharingServer {
                     _ = cancel_relay.cancelled() => break,
                     res = sample_rx.recv() => {
                         match res {
-                            Ok(samples) => {
-                                let _ = tx_relay.send(samples);
-                            }
+                            Ok(samples) => { let _ = tx_relay.send(samples); }
                             Err(_) => break, // Upstream closed
                         }
                     }
@@ -105,6 +115,7 @@ impl SharingServer {
     }
 }
 
+#[cfg(unix)]
 impl Drop for SharingServer {
     fn drop(&mut self) {
         self.stop();

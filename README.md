@@ -15,16 +15,17 @@ Designed for the modern era (2026+), this driver moves away from the legacy C ca
 
 | Dongle | Tuner | Host | Clients Tested |
 |--------|-------|------|----------------|
-| RTL-SDR Blog V4 | R828D | Raspberry Pi 5 (Bookworm) | OpenWebRX+, GQRX |
+| RTL-SDR Blog V4 | R828D | Raspberry Pi 5 (Bookworm) | OpenWebRX+, GQRX, SDR++ |
+| RTL-SDR Blog V4 | R828D | Windows 11 x86_64 (AMD Ryzen 7600X) | Corona SDR (IOS) |
 
-Other RTL2832U dongles with R820T/R820T2 tuners should work — hardware verification welcome.
+Other RTL2832U dongles with R820T/R820T2/E4000 tuners should work — hardware verification welcome.
 
 ## 🚀 Key Features
 
 - **Async-First Architecture:** Built on Tokio. SDR data is a standard `Stream` with backpressure and graceful shutdown.
 - **Full RTL-SDR Blog V4 Support:** Correct R828D initialization sequence reverse-engineered from usbmon traces against librtlsdr.
 - **Zero-Allocation Pipeline:** Custom buffer pooling eliminates memory allocations in the hot path.
-- **NEON SIMD Acceleration:** Optimized ARM NEON intrinsics for `u8` → `f32` conversion and FIR filtering on aarch64.
+- **Auto-Vectorized DSP:** LLVM auto-vectorizes to NEON on aarch64 and AVX-512 on Zen 4 x86_64 — no manual intrinsics needed.
 - **Automatic Tuner Probing:** I2C presence detection for Rafael Micro (R820T/R828D), Elonics (E4000), and Fitipower (FC0012/13).
 - **Zero-Copy Broadcasting:** Share a single hardware device across multiple local apps via `Arc`-based broadcasting.
 - **Precision Frequency Correction:** Integrated PPM correction for both tuner PLL and RTL2832U resampler.
@@ -51,13 +52,15 @@ The RTL-SDR Blog V4 required several initialization steps discovered during reve
 
 ## 🚀 Performance
 
-Benchmarked on Raspberry Pi 5 (Cortex-A76, aarch64):
+| Operation | Pi 5 aarch64 | x86_64 (Ryzen 7600X) |
+|-----------|-------------|----------------------|
+| `u8` → `f32` converter | 1.49 GiB/s | 12.67 GiB/s (AVX-512) |
+| FIR decimator ÷8 | 426 MSa/s | 590 MSa/s |
+| Full pipeline ÷8 | 328 MiB/s | — |
 
-| Operation | Throughput |
-|-----------|------------|
-| `u8` → `f32` converter | ~1.49 GiB/s |
-| 33-tap FIR decimator (NEON) | ~670 MSa/s |
-| CPU usage at 2.048 MSPS | < 6% |
+Both results use `cargo build --release` without `target-cpu=native`. On x86_64, LLVM auto-vectorizes the converter to AVX-512 on supported CPUs. Setting `target-cpu=native` on Zen 4 can cause AVX-512 frequency throttling that hurts the decimator — the default build is better balanced.
+
+Pi 5 is memory-bandwidth-bound on the converter. x86_64 desktop has enough DDR5 bandwidth that the ALU keeps up.
 
 ## 🎛 Performance Tuning & Latency
 
@@ -94,7 +97,7 @@ let stream = driver.stream();
 
 - Rust toolchain (stable)
 - libusb development headers
-- USB access (see permissions setup below)
+- USB access (see platform setup below)
 
 ```bash
 # Ubuntu/Debian
@@ -102,6 +105,8 @@ sudo apt-get install libusb-1.0-0-dev
 
 # macOS
 brew install libusb
+
+# Windows — no libusb headers needed, but see USB driver setup below
 ```
 
 ## 🔌 USB Permissions
@@ -123,6 +128,23 @@ sudo usermod -aG plugdev $USER
 
 For quick testing only: `sudo chmod 666 /dev/bus/usb/$(lsusb | grep RTL | awk '{print $2"/"$4}' | tr -d ':')`
 
+### Windows
+
+Windows requires a one-time driver swap via [Zadig](https://zadig.akeo.ie/) — the dongle enumerates as a DVB-T TV tuner by default and must be switched to WinUSB before libusb can claim it:
+
+1. Download and open Zadig
+2. Options → List All Devices
+3. Select the RTL-SDR entry (look for "Bulk-In, Interface 0")
+4. Select **WinUSB** in the driver dropdown
+5. Click "Replace Driver"
+
+This survives reboots but may need to be repeated if you plug into a different USB port. The Unix socket sharing server (`SharingServer`) is not available on Windows — use the rtl_tcp server for local sharing instead.
+
+### Environment Variables (Windows)
+
+CMD: `set RUST_LOG=info` then run the command separately.
+PowerShell: `$env:RUST_LOG = "info"; cargo run --release --example rtl_tcp`
+
 ## 🏗 Building
 
 ```bash
@@ -136,6 +158,8 @@ For maximum Pi 5 performance, set the target CPU explicitly:
 ```bash
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
+
+On x86_64, `target-cpu=native` is not recommended — LLVM already auto-vectorizes well, and on Zen 4 CPUs AVX-512 activation causes frequency throttling that hurts sustained DSP throughput.
 
 ## ▶️ Examples
 
@@ -253,8 +277,8 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 - [x] **Phase 8: rtl_tcp Server** — Compatible with OpenWebRX+, GQRX, SDR#
 - [x] **Phase 9: Elonics E4000** — Full Zero-IF driver with manual gain control
 - [ ] **Phase 10: Fitipower Tuners** — FC0012/FC0013 register maps
-- [ ] **Phase 11: Cross-Platform** — Windows testing, x86_64 SIMD (AVX2)
-- [ ] **Phase 12: Configurables** — Bias-T persistence and AGC modes
+- [x] **Phase 11: Cross-Platform** — Windows confirmed working via Zadig/WinUSB; x86_64 LLVM auto-vectorization benchmarked, no manual SIMD needed
+- [ ] **Phase 12: Configurables** — Runtime buffer sizes, gain modes, bias-T persistence
 
 ## 📝 Reference Material
 

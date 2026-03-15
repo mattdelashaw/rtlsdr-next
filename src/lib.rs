@@ -20,6 +20,7 @@ pub use demod::DEFAULT_SAMPLE_RATE;
 pub use device::{Device, DeviceInfo};
 pub use error::{Error, Result};
 pub use rtl_tcp::TcpServer;
+#[cfg(unix)]
 pub use server::SharingServer;
 pub use stream::{F32Stream, PooledBuffer, SampleStream, StreamConfig};
 pub use tuner::{BoardConfig, FilterRange, InputPath, Tuner};
@@ -306,6 +307,7 @@ impl Driver {
         F32Stream::new(self.stream(), factor, self.stream_config)
     }
 
+    #[cfg(unix)]
     pub async fn start_sharing<P: AsRef<std::path::Path>>(&self, path: P) -> Result<SharingServer> {
         let mut stream = self.stream();
         let (tx, rx) = tokio::sync::broadcast::channel::<Arc<Vec<u8>>>(16);

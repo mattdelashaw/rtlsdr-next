@@ -16,6 +16,7 @@ Async Rust RTL-SDR driver. Tokio-native stream architecture. Primary target: RTL
 - `F32Stream` — DSP pipeline: convert → decimate → DC remove → AGC
 - `PooledBuffer<B>` — zero-allocation buffer pool; Drop uses `try_send` with thread fallback, never silently drops
 - `StreamConfig` — configurable buffer count and size, passed through `Driver::stream()` and `Driver::stream_f32()`
+- `SharingServer` — Unix Domain Socket server, `#[cfg(unix)]` only; not available on Windows
 
 ## Commands
 - Build: `cargo build --release`
@@ -46,6 +47,14 @@ StreamConfig { num_buffers: 4, buffer_size: 65536 }  // ~100ms latency
 Note: `SampleStream` flushes stale buffers automatically on `set_frequency` via broadcast signal.
 GQRX has its own internal audio buffer that we cannot flush — remaining lag after our flush is client-side.
 Suggest GQRX users set: Preferences → Audio → Buffer size to minimum.
+
+## Platform Notes
+- `SharingServer` and all of `server.rs` is `#[cfg(unix)]` — do not import `tokio::net::UnixListener` without this gate
+- Windows: use rtl_tcp server for local sharing; Unix socket is unavailable
+- Windows USB: requires Zadig WinUSB driver swap before libusb can claim the device
+- `RUST_LOG=value command` syntax is Unix only — Windows CMD uses `set RUST_LOG=value`, PowerShell uses `$env:RUST_LOG = "value"`
+- Do not set `target-cpu=native` on x86_64 — AVX-512 throttling on Zen 4 hurts decimator throughput; generic build is better balanced
+- macOS: no driver swap needed, libusb works out of the box
 
 ## Key Constants
 - R820T I2C: `0x34`, R828D I2C: `0x74`, check val: `0x69`
