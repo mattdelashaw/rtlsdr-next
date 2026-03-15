@@ -1,6 +1,7 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rtlsdr_next::converter;
 use rtlsdr_next::dsp::Decimator;
+use std::hint::black_box;
 
 fn bench_converter(c: &mut Criterion) {
     let size = 256 * 1024; // 256KB block

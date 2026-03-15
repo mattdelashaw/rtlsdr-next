@@ -131,52 +131,78 @@ impl R82xx {
         }
     }
 
-    fn write_reg_mask(&self, reg: u8, val: u8, mask: u8) -> Result<()> {
-        let new = {
-            let mut regs = self.regs.lock();
-            let idx = (reg - REG_SHADOW_START) as usize;
-            if idx >= NUM_REGS {
-                return Err(Error::Tuner(format!("Register 0x{:02x} out of range", reg)));
-            }
-            let old = regs[idx];
-            let new = (old & !mask) | (val & mask);
-            regs[idx] = new;
-            new
-        };
-        self.device.i2c_write_tuner(self.i2c_addr, reg, &[new])
+    fn update_shadow(&self, reg: u8, val: u8, mask: u8) -> Result<u8> {
+        let mut regs = self.regs.lock();
+        let idx = (reg - REG_SHADOW_START) as usize;
+        if idx >= NUM_REGS {
+            return Err(Error::Tuner(format!("Register 0x{:02x} out of range", reg)));
+        }
+        let new = (regs[idx] & !mask) | (val & mask);
+        regs[idx] = new;
+        Ok(new)
     }
 
-    fn read_status(&self) -> Result<[u8; 5]> {
-        self.device.i2c_write_tuner(self.i2c_addr, 0x00, &[])?;
-        let mut data = self.device.i2c_read_direct(self.i2c_addr, 5)?;
+    /// Write without repeater toggle — must be called inside `with_repeater`.
+    fn write_reg_mask_raw(&self, reg: u8, val: u8, mask: u8) -> Result<()> {
+        let new = self.update_shadow(reg, val, mask)?;
+        self.device.i2c_write_raw(self.i2c_addr, &[reg, new])
+    }
+
+    /// Hold the I2C repeater open for the duration of a closure.
+    /// Repeater is always closed on exit, even on error.
+    fn with_repeater<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce() -> Result<T>,
+    {
+        self.device.set_i2c_repeater(true)?;
+        let result = f();
+        let _ = self.device.set_i2c_repeater(false);
+        result
+    }
+
+    /// Raw read — must be called inside `with_repeater`.
+    fn read_status_raw(&self) -> Result<[u8; 5]> {
+        self.device.i2c_write_raw(self.i2c_addr, &[0x00])?;
+        let mut data = self.device.i2c_read_raw(self.i2c_addr, 5)?;
         for byte in data.iter_mut() {
             *byte = bit_reverse(*byte);
         }
         Ok([data[0], data[1], data[2], data[3], data[4]])
     }
 
-    fn wait_pll_lock(&self, retries: u32) -> Result<bool> {
+    /// Must be called inside `with_repeater`.
+    fn wait_pll_lock_raw(&self, retries: u32) -> Result<bool> {
+        let t = std::time::Instant::now();
         for i in 0..retries {
-            self.device.i2c_write_tuner(self.i2c_addr, 0x00, &[])?;
-            let mut status = self.device.i2c_read_direct(self.i2c_addr, 3)?;
+            self.device.i2c_write_raw(self.i2c_addr, &[0x00])?;
+            let mut status = self.device.i2c_read_raw(self.i2c_addr, 3)?;
             for byte in status.iter_mut() {
                 *byte = bit_reverse(*byte);
             }
             if status[2] & 0x40 != 0 {
                 *self.has_lock.lock() = true;
+                log::debug!(
+                    "PLL locked after {} attempt(s), {}µs",
+                    i + 1,
+                    t.elapsed().as_micros()
+                );
                 return Ok(true);
             }
             if i == 0 {
-                self.write_reg_mask(0x12, 0x06, 0xff)?;
+                self.write_reg_mask_raw(0x12, 0x06, 0xff)?;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
         *self.has_lock.lock() = false;
-        warn!("PLL not locked after {} retries", retries);
+        warn!(
+            "PLL not locked after {} retries ({}ms)",
+            retries,
+            t.elapsed().as_millis()
+        );
         Ok(false)
     }
-
-    fn set_pll(&self, lo_freq_hz: u64) -> Result<u64> {
+    /// Must be called inside `with_repeater`.
+    fn set_pll_raw(&self, lo_freq_hz: u64) -> Result<u64> {
         let pll_ref = *self.xtal_freq.lock();
         let pll_ref_khz = pll_ref / 1000;
 
@@ -199,7 +225,7 @@ impl R82xx {
         }
 
         let vco_freq = lo_freq_hz * mix_div;
-        let status = self.read_status()?;
+        let status = self.read_status_raw()?;
         let vco_fine_tune = (status[4] & 0x30) >> 4;
 
         // R828D VCO power ref = 1, R820T = 2.
@@ -215,7 +241,7 @@ impl R82xx {
             div_num += 1;
         }
 
-        self.write_reg_mask(0x10, div_num << 5, 0xe0)?;
+        self.write_reg_mask_raw(0x10, div_num << 5, 0xe0)?;
 
         let nint: u64 = vco_freq / (2 * pll_ref);
         let mut vco_fra: u64 = (vco_freq - 2 * pll_ref * nint) / 1000;
@@ -226,10 +252,10 @@ impl R82xx {
         let ni = ((nint - 13) / 4) as u8;
         let si = (nint as u8).wrapping_sub(4u8.wrapping_mul(ni).wrapping_add(13));
         self.device
-            .i2c_write_tuner(self.i2c_addr, 0x14, &[ni | (si << 6)])?;
+            .i2c_write_raw(self.i2c_addr, &[0x14, ni | (si << 6)])?;
 
         let pw_sdm: u8 = if vco_fra == 0 { 0x08 } else { 0x00 };
-        self.write_reg_mask(0x12, pw_sdm, 0x08)?;
+        self.write_reg_mask_raw(0x12, pw_sdm, 0x08)?;
 
         let mut sdm: u32 = 0;
         let mut n_sdm: u32 = 2;
@@ -244,12 +270,12 @@ impl R82xx {
             n_sdm <<= 1;
         }
         self.device
-            .i2c_write_tuner(self.i2c_addr, 0x16, &[(sdm >> 8) as u8])?;
+            .i2c_write_raw(self.i2c_addr, &[0x16, (sdm >> 8) as u8])?;
         self.device
-            .i2c_write_tuner(self.i2c_addr, 0x15, &[(sdm & 0xff) as u8])?;
+            .i2c_write_raw(self.i2c_addr, &[0x15, (sdm & 0xff) as u8])?;
 
-        if self.wait_pll_lock(10)? {
-            self.write_reg_mask(0x1a, 0x08, 0x08)?;
+        if self.wait_pll_lock_raw(10)? {
+            self.write_reg_mask_raw(0x1a, 0x08, 0x08)?;
         }
         Ok(lo_freq_hz)
     }
@@ -260,41 +286,37 @@ impl R82xx {
         } else {
             (0x00, 0x80)
         };
-        self.write_reg_mask(0x0a, reg_0a, 0x70)?;
-        self.write_reg_mask(0x0b, reg_0b, 0xef)?;
-        Ok(())
+        self.with_repeater(|| {
+            self.write_reg_mask_raw(0x0a, reg_0a, 0x70)?;
+            self.write_reg_mask_raw(0x0b, reg_0b, 0xef)
+        })
     }
 
-    /// Set the RF MUX/filter stage. Uses the frequency range table for all
-    /// parameters. The `open_d` field is overridden externally via
-    /// `apply_notch` on V4 boards — this method uses the stored notch state.
-    fn set_mux(&self, freq_hz: u64) -> Result<()> {
+    /// Must be called inside `with_repeater`.
+    fn set_mux_raw(&self, freq_hz: u64) -> Result<()> {
         let range = FREQ_RANGES
             .iter()
             .rev()
             .find(|r| freq_hz >= r.freq_hz)
             .unwrap_or(&FREQ_RANGES[0]);
 
-        self.write_reg_mask(0x17, 0xa0, 0x30)?;
-
-        // open_d: suppressed (0x00) in notch bands, normal table value otherwise.
+        self.write_reg_mask_raw(0x17, 0xa0, 0x30)?;
         let open_d = if *self.in_notch.lock() {
             0x00
         } else {
             range.open_d
         };
-        self.write_reg_mask(0x17, open_d, 0x08)?;
-
-        self.write_reg_mask(0x1a, range.rf_mux_ploy, 0xc3)?;
-        self.write_reg_mask(0x1b, range.tf_c, 0xff)?;
+        self.write_reg_mask_raw(0x17, open_d, 0x08)?;
+        self.write_reg_mask_raw(0x1a, range.rf_mux_ploy, 0xc3)?;
+        self.write_reg_mask_raw(0x1b, range.tf_c, 0xff)?;
         let cap = XTAL_CAP_SEL[range.xtal_cap_sel as usize];
-        self.write_reg_mask(0x10, cap, 0x0b)?;
-        self.write_reg_mask(0x08, 0x00, 0x3f)?;
-        self.write_reg_mask(0x09, 0x00, 0x3f)?;
-        self.write_reg_mask(0x1d, 0x18, 0x38)?;
-        self.write_reg_mask(0x1c, 0x24, 0x04)?;
-        self.write_reg_mask(0x1e, 14, 0x1f)?;
-        self.write_reg_mask(0x1a, 0x20, 0x30)?;
+        self.write_reg_mask_raw(0x10, cap, 0x0b)?;
+        self.write_reg_mask_raw(0x08, 0x00, 0x3f)?;
+        self.write_reg_mask_raw(0x09, 0x00, 0x3f)?;
+        self.write_reg_mask_raw(0x1d, 0x18, 0x38)?;
+        self.write_reg_mask_raw(0x1c, 0x24, 0x04)?;
+        self.write_reg_mask_raw(0x1e, 14, 0x1f)?;
+        self.write_reg_mask_raw(0x1a, 0x20, 0x30)?;
         Ok(())
     }
 }
@@ -309,10 +331,12 @@ impl Tuner for R82xx {
             REG_SHADOW_START + mid as u8,
             &INIT_ARRAY[mid..],
         )?;
-        self.write_reg_mask(0x1a, 0x00, 0x0c)?;
-        self.write_reg_mask(0x12, 0x06, 0xff)?;
-        self.write_reg_mask(0x0c, 0x00, 0x0f)?;
-        self.write_reg_mask(0x13, 0x01, 0x3f)?;
+        self.with_repeater(|| {
+            self.write_reg_mask_raw(0x1a, 0x00, 0x0c)?;
+            self.write_reg_mask_raw(0x12, 0x06, 0xff)?;
+            self.write_reg_mask_raw(0x0c, 0x00, 0x0f)?;
+            self.write_reg_mask_raw(0x13, 0x01, 0x3f)
+        })?;
         self.set_bandwidth(IF_FREQ_NARROW)?;
         Ok(())
     }
@@ -323,10 +347,16 @@ impl Tuner for R82xx {
         }
         let current_if = *self.current_if.lock();
         let lo_freq = hz + current_if;
-        // No V4 LO offset here — the orchestrator handles HF path detection
-        // and passes the already-corrected frequency if needed.
-        self.set_mux(hz)?;
-        self.set_pll(lo_freq)?;
+        // Single repeater bracket for entire mux + pll. Before: ~270ms. After: ~45ms.
+        self.with_repeater(|| {
+            let t_mux = std::time::Instant::now();
+            self.set_mux_raw(hz)?;
+            log::debug!("set_mux: {}µs", t_mux.elapsed().as_micros());
+            let t_pll = std::time::Instant::now();
+            self.set_pll_raw(lo_freq)?;
+            log::debug!("set_pll total: {}µs", t_pll.elapsed().as_micros());
+            Ok(())
+        })?;
         Ok(hz)
     }
 
@@ -340,12 +370,14 @@ impl Tuner for R82xx {
         let cfg = &GAIN_TABLE[idx];
 
         // 0x05: bits 0-3 are LNA gain. bits 5-6 are V4 antenna mux.
-        // We MUST use a mask (0x0f) here or we stomp the V4 antenna setting.
-        self.write_reg_mask(0x05, 0x10, 0x10)?; // set manual gain bit
-        self.write_reg_mask(0x07, 0x00, 0x10)?;
-        self.write_reg_mask(0x05, cfg.lna, 0x0f)?; // LNA gain bits 0-3
-        self.write_reg_mask(0x07, cfg.mix, 0x0f)?;
-        self.write_reg_mask(0x0c, cfg.vga, 0x0f)?;
+        // Mask 0x0f preserves the antenna mux bits.
+        self.with_repeater(|| {
+            self.write_reg_mask_raw(0x05, 0x10, 0x10)?;
+            self.write_reg_mask_raw(0x07, 0x00, 0x10)?;
+            self.write_reg_mask_raw(0x05, cfg.lna, 0x0f)?;
+            self.write_reg_mask_raw(0x07, cfg.mix, 0x0f)?;
+            self.write_reg_mask_raw(0x0c, cfg.vga, 0x0f)
+        })?;
 
         let actual = GAIN_STEPS[idx] as f32 / 10.0;
         *self.current_gain.lock() = actual;
@@ -389,6 +421,11 @@ impl Tuner for R82xx {
         Ok(())
     }
 
+    fn set_gain_by_index(&self, idx: usize) -> Result<f32> {
+        let clamped = idx.min(GAIN_STEPS.len() - 1);
+        self.set_gain(GAIN_STEPS[clamped] as f32 / 10.0)
+    }
+
     fn set_input_path(&self, path: crate::tuner::InputPath) -> Result<()> {
         // R820T only has one input path, so this is a no-op for it.
         if self.tuner_type == TunerType::R820T {
@@ -396,27 +433,20 @@ impl Tuner for R82xx {
         }
 
         use crate::tuner::InputPath::*;
-        match path {
+        self.with_repeater(|| match path {
             Hf => {
-                // HF: Cable 2 active (reg 0x06 bit 3)
-                self.write_reg_mask(0x06, 0x08, 0x08)?;
-                // Disable Cable 1/Air In (reg 0x05 bits 5,6)
-                self.write_reg_mask(0x05, 0x00, 0x60)?;
+                self.write_reg_mask_raw(0x06, 0x08, 0x08)?; // cable 2 active
+                self.write_reg_mask_raw(0x05, 0x00, 0x60) // cable 1 / air in off
             }
             Vhf => {
-                // VHF: Cable 1 active (reg 0x05 bit 6)
-                self.write_reg_mask(0x05, 0x40, 0x60)?;
-                // Disable Cable 2
-                self.write_reg_mask(0x06, 0x00, 0x08)?;
+                self.write_reg_mask_raw(0x05, 0x40, 0x60)?; // cable 1 active
+                self.write_reg_mask_raw(0x06, 0x00, 0x08) // cable 2 off
             }
             Uhf => {
-                // UHF: Air In active (reg 0x05 bit 5)
-                self.write_reg_mask(0x05, 0x20, 0x60)?;
-                // Disable Cable 2
-                self.write_reg_mask(0x06, 0x00, 0x08)?;
+                self.write_reg_mask_raw(0x05, 0x20, 0x60)?; // air in active
+                self.write_reg_mask_raw(0x06, 0x00, 0x08) // cable 2 off
             }
-        }
-        Ok(())
+        })
     }
 }
 

@@ -43,6 +43,14 @@ This project is a high-performance, async-native Rust driver for RTL2832U-based 
 - **Safety:** Leverage `rusb` for safe USB handling but maintain "C-like" precision for hardware registers.
 - **Async:** Everything should be compatible with the `Tokio` runtime.
 
+## 📝 Recent Architectural Updates (March 2026)
+
+- **I2C Performance:** Reduced R82xx tuning latency from ~270ms to ~45ms by bracketing entire PLL/MUX sequences within a single I2C repeater toggle (`with_repeater`).
+- **SDR++ Compatibility:** 
+  - Implemented `rtl_tcp` command `0x13` (gain-by-index) to support the SDR++ gain slider.
+  - Silently ignore command `0x0d` (gain confirmation) to avoid protocol errors.
+  - Refined `rtl_tcp` command `0x03` (gain mode) to only apply a default 30dB gain when entering Auto mode or when Manual mode is requested while current gain is 0.
+- **Observability:** Added high-resolution timing logs to `set_frequency` and `set_sample_rate` for real-time performance tracking.
+
 ## Gemini Added Memories
 - Always propose an approach and ask for confirmation before implementing changes for Inquiries. Only act autonomously when given a direct command (e.g., 'hey go do X').
-

@@ -191,4 +191,11 @@ pub trait Tuner: Send + Sync {
     fn apply_notch(&self, _in_notch_band: bool) -> Result<()> {
         Ok(())
     }
+
+    /// Set gain by index into the chip's gain table.
+    /// Used by rtl_tcp command 0x0d (SDR++ gain-by-index).
+    /// Default: maps to lowest gain. Override in chip drivers with a known table.
+    fn set_gain_by_index(&self, _idx: usize) -> Result<f32> {
+        self.set_gain(0.0)
+    }
 }

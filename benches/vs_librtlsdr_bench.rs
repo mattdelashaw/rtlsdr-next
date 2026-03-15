@@ -9,11 +9,12 @@
 //!
 //! The C code is compiled only if the `bench-c` feature is enabled.
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rtlsdr_next::converter;
 use rtlsdr_next::converter::Converter;
 use rtlsdr_next::converter::ScalarConverter;
 use rtlsdr_next::dsp::Decimator;
+use std::hint::black_box;
 
 // ── Block size matches the driver's real transfer size ───────────────────────
 const BLOCK_SIZE: usize = 256 * 1024; // 256 KB — one USB bulk transfer

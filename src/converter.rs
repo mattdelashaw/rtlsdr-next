@@ -147,7 +147,7 @@ mod tests {
         let input = vec![255u8, 0];
         // Standard: [1.0, -1.0]
         // Inverted: [1.0, 1.0]
-        let expected = vec![1.0, 1.0];
+        let expected = [1.0, 1.0];
         let mut output = vec![0.0f32; input.len()];
         convert_inverted(&input, &mut output);
         for (i, (&a, &e)) in output.iter().zip(expected.iter()).enumerate() {

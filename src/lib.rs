@@ -164,6 +164,7 @@ impl Driver {
     }
 
     pub fn set_frequency(&mut self, hz: u64) -> Result<u64> {
+        let _t = std::time::Instant::now();
         // 1. Calculate the tuning plan
         let plan = self.orchestrator.plan_tuning(hz);
 
@@ -207,10 +208,11 @@ impl Driver {
 
         self.frequency = hz;
         log::info!(
-            "Frequency set to {} Hz (actual: {}, HF_Inv: {})",
+            "Frequency set to {} Hz (actual: {}, HF_Inv: {}, took: {}ms)",
             hz,
             actual,
-            plan.spectral_inv
+            plan.spectral_inv,
+            _t.elapsed().as_millis()
         );
 
         // Notify streams to flush old buffers
@@ -242,6 +244,7 @@ impl Driver {
     }
 
     pub fn set_sample_rate(&mut self, rate_hz: u32) -> Result<()> {
+        let _t = std::time::Instant::now();
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
 
@@ -265,7 +268,11 @@ impl Driver {
         demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
 
         self.sample_rate = rate_hz;
-        log::info!("Sample rate set to {} Hz", rate_hz);
+        log::info!(
+            "Sample rate set to {} Hz (took: {}ms)",
+            rate_hz,
+            _t.elapsed().as_millis()
+        );
         Ok(())
     }
 

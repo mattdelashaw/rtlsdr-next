@@ -117,6 +117,9 @@ async fn handle_client(
             let mut d = cmd_driver.lock().await;
             trace!("Received command: {:?}, arg: {:?}", cmd, arg);
             match cmd {
+                // 0x0d: gain confirmation request — SDR++ sends after every 0x13
+                // We don't implement the response protocol, silently ignore.
+                0x0d => {}
                 0x01 => {
                     let r = d.set_frequency(arg as u64);
                     trace!("set_frequency({}) = {:?}", arg, r);
@@ -125,10 +128,13 @@ async fn handle_client(
                     let _ = d.set_sample_rate(arg);
                 }
                 // 0x03: set gain mode — 0=auto(AGC), 1=manual
-                // When auto, set a reasonable default gain; manual gain comes via 0x04
+                // SDR++ sends manual mode but controls gain via 0x13 not 0x04.
+                // We apply a default 30dB if switching to Auto, or if Manual is
+                // requested but currently no gain is active (0.0).
                 0x03 => {
-                    if arg == 0 {
-                        let _ = d.tuner.set_gain(30.0); // auto: use mid gain
+                    let current = d.tuner.get_gain().unwrap_or(0.0);
+                    if arg == 0 || (arg == 1 && current < 1.0) {
+                        let _ = d.tuner.set_gain(30.0);
                     }
                 }
                 0x04 => {
@@ -141,6 +147,11 @@ async fn handle_client(
                 // 0x09: set direct sampling — ignore (V4 handles this internally)
                 // 0x0a: set offset tuning — ignore
                 0x08..=0x0a => {}
+                // 0x13: set tuner gain by index — SDR++ gain slider
+                // arg is a direct index into the tuner's gain table (0-28 for R82xx)
+                0x13 => {
+                    let _ = d.tuner.set_gain_by_index(arg as usize);
+                }
                 0x0e => {
                     let _ = d.set_bias_t(arg != 0);
                 }
