@@ -53,7 +53,8 @@ pub mod tuner_ids {
     pub const R82XX_I2C_ADDR: u8 = 0x34;
     pub const R828D_I2C_ADDR: u8 = 0x74;
     pub const E4000_I2C_ADDR: u8 = 0xc8;
-    pub const FC0012_I2C_ADDR: u8 = 0xc6;
+    pub const FC0012_I2C_ADDR: u8 = 0xc2;
+    pub const FC0013_I2C_ADDR: u8 = 0xc6;
 }
 
 pub const IF_FREQ_HZ: u64 = 3_570_000;

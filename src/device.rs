@@ -225,30 +225,52 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
     fn probe_tuner(&self) -> Result<TunerType> {
         self.set_i2c_repeater(true)?;
         let mut found = TunerType::Unknown(0);
-        // Probing 0x34
+
+        // 1. Probing R820T/R828D (Common, don't need reset usually)
         if let Ok(res) = self.i2c_read_tuner(registers::tuner_ids::R82XX_I2C_ADDR, 0x00, 1)
             && res[0] == 0x69
         {
             found = TunerType::R820T;
         }
-        // Probing 0x74
         if matches!(found, TunerType::Unknown(_))
             && let Ok(res) = self.i2c_read_tuner(registers::tuner_ids::R828D_I2C_ADDR, 0x00, 1)
             && res[0] == 0x69
         {
             found = TunerType::R828D;
         }
-        // Probing 0xc8 (E4000)
-        if matches!(found, TunerType::Unknown(_))
-            && let Ok(_) = self.i2c_read_tuner(registers::tuner_ids::E4000_I2C_ADDR, 0x02, 1)
-        {
-            found = TunerType::E4000;
-        }
+
+        // 2. Probing E4000/FC0012/FC0013 (Need GPIO 4 reset to respond reliably)
         if matches!(found, TunerType::Unknown(_)) {
             let _ = self.set_gpio_output(4);
             let _ = self.set_gpio_bit(4, true);
             let _ = self.set_gpio_bit(4, false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let _ = self.set_gpio_bit(4, true);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+
+            // E4000 (0xc8)
+            if self
+                .i2c_read_tuner(registers::tuner_ids::E4000_I2C_ADDR, 0x02, 1)
+                .is_ok()
+            {
+                found = TunerType::E4000;
+            }
+            // FC0012 (0xc2) -> ID 0xa1
+            if matches!(found, TunerType::Unknown(_))
+                && let Ok(res) = self.i2c_read_tuner(registers::tuner_ids::FC0012_I2C_ADDR, 0x00, 1)
+                && res[0] == 0xa1
+            {
+                found = TunerType::FC0012;
+            }
+            // FC0013 (0xc6) -> ID 0x63
+            if matches!(found, TunerType::Unknown(_))
+                && let Ok(res) = self.i2c_read_tuner(registers::tuner_ids::FC0013_I2C_ADDR, 0x00, 1)
+                && res[0] == 0x63
+            {
+                found = TunerType::FC0013;
+            }
         }
+
         let _ = self.set_i2c_repeater(false);
         Ok(found)
     }

@@ -85,10 +85,14 @@ impl Driver {
             BoardConfig::Generic => 16_000_000,
         };
 
-        // Most R820T/R828D/E4000 sticks (even generic) use 28.8 MHz.
+        // Most R820T/R828D/E4000/FC0012/13 sticks (even generic) use 28.8 MHz.
         if matches!(
             tuner_type,
-            TunerType::R820T | TunerType::R828D | TunerType::E4000
+            TunerType::R820T
+                | TunerType::R828D
+                | TunerType::E4000
+                | TunerType::FC0012
+                | TunerType::FC0013
         ) {
             xtal_hz = 28_800_000;
         }
@@ -113,6 +117,18 @@ impl Driver {
                 xtal_hz,
             )),
             TunerType::E4000 => Box::new(tuners::e4k::E4k::new(device.clone(), xtal_hz)),
+            TunerType::FC0012 => Box::new(tuners::fc001x::Fc001x::new(
+                device.clone(),
+                tuner_type,
+                registers::tuner_ids::FC0012_I2C_ADDR,
+                xtal_hz,
+            )),
+            TunerType::FC0013 => Box::new(tuners::fc001x::Fc001x::new(
+                device.clone(),
+                tuner_type,
+                registers::tuner_ids::FC0013_I2C_ADDR,
+                xtal_hz,
+            )),
             _ => {
                 return Err(Error::UnsupportedTuner(format!(
                     "{:?} not yet supported",
@@ -127,13 +143,19 @@ impl Driver {
         if matches!(tuner_type, TunerType::R820T | TunerType::R828D) || info.is_v4 {
             demod::set_tuner_low_if(hw)?;
             demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
-        } else if tuner_type == TunerType::E4000 {
+        } else if matches!(
+            tuner_type,
+            TunerType::E4000 | TunerType::FC0012 | TunerType::FC0013
+        ) {
             demod::set_tuner_zero_if(hw)?;
             demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
         }
 
         // ── 6. Demodulator sync ────────────────────────────────────────────
-        let initial_if = if tuner_type == TunerType::E4000 {
+        let initial_if = if matches!(
+            tuner_type,
+            TunerType::E4000 | TunerType::FC0012 | TunerType::FC0013
+        ) {
             0
         } else {
             2_300_000u32

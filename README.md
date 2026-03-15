@@ -275,8 +275,8 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 - [x] **Phase 6: Auto Probing** — I2C handshake-based tuner detection
 - [x] **Phase 7: Zero-Allocation** — Buffer pooling, in-place processing
 - [x] **Phase 8: rtl_tcp Server** — Compatible with OpenWebRX+, GQRX, SDR#
-- [x] **Phase 9: Elonics E4000** — Full Zero-IF driver with manual gain control
-- [ ] **Phase 10: Fitipower Tuners** — FC0012/FC0013 register maps
+- [x] **Phase 9: Elonics E4000** — Full Zero-IF driver with manual gain control (theoretically)
+- [x] **Phase 10: Fitipower Tuners** — FC0012/FC0013 register maps (theoretically)
 - [x] **Phase 11: Cross-Platform** — Windows confirmed working via Zadig/WinUSB; x86_64 LLVM auto-vectorization benchmarked, no manual SIMD needed
 - [ ] **Phase 12: Configurables** — Runtime buffer sizes, gain modes, bias-T persistence
 
