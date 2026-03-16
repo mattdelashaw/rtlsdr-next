@@ -1,6 +1,7 @@
 [package]
 name = "rtlsdr-next"
 version = "0.1.0"
+authors = ["Matt Delashaw", "The AI scrum team"]
 edition = "2024"
 license = "Apache-2.0"
 description = "A high-performance, async-native Rust driver for RTL2832U-based SDRs, with first-class support for the RTL-SDR Blog V4."
@@ -9,6 +10,12 @@ repository = "https://github.com/mattdelashaw/rtlsdr-next"
 homepage = "https://github.com/mattdelashaw/rtlsdr-next"
 keywords = ["sdr", "radio", "rtl-sdr", "rtl2832u", "driver"]
 categories = ["hardware-support", "multimedia::audio"]
+
+[package.metadata.wix]
+upgrade-guid = "7C50F061-A124-4959-98CC-E8230563A53A"
+path-guid = "18B5D941-AD59-4568-A4BB-D759E52D9E59"
+license = false
+eula = false
 
 [[bin]]
 name = "rtl_tcp"

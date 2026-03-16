@@ -39,7 +39,7 @@ fn parse_args() -> Result<Args> {
                 println!("Options:");
                 println!("  -a, --address <addr>  Listening address (default: 0.0.0.0)");
                 println!("  -p, --port <port>     Listening port (default: 1234)");
-                println!("  -h, --help            Print this help");
+                println!("  -h, --help            What else do you expect?");
                 std::process::exit(0);
             }
             _ => {

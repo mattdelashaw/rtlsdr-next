@@ -16,7 +16,8 @@ pub struct Fc001x {
     device: Arc<dyn HardwareInterface>,
     tuner_type: TunerType,
     i2c_addr: u8,
-    xtal_freq: u64,
+    nominal_xtal: u64,
+    xtal_freq: Mutex<u64>,
     current_gain: Mutex<f32>,
     current_if: Mutex<u64>,
 }
@@ -32,7 +33,8 @@ impl Fc001x {
             device,
             tuner_type,
             i2c_addr,
-            xtal_freq: xtal_hz,
+            nominal_xtal: xtal_hz,
+            xtal_freq: Mutex::new(xtal_hz),
             current_gain: Mutex::new(0.0),
             current_if: Mutex::new(0),
         }
@@ -125,7 +127,8 @@ impl Tuner for Fc001x {
         }
 
         // xdiv = f_vco / (xtal / 2), rounded
-        let xtal_div2 = self.xtal_freq / 2;
+        let xtal = *self.xtal_freq.lock();
+        let xtal_div2 = xtal / 2;
         let mut xdiv = (f_vco / xtal_div2) as u16;
         if (f_vco - xdiv as u64 * xtal_div2) >= (xtal_div2 / 2) {
             xdiv += 1; // round up
@@ -204,8 +207,10 @@ impl Tuner for Fc001x {
         *self.current_if.lock()
     }
 
-    fn set_ppm(&self, _ppm: i32) -> Result<()> {
-        // PPM correction for Fitipower is handled at the driver level via IF frequency.
+    fn set_ppm(&self, ppm: i32) -> Result<()> {
+        let nominal = self.nominal_xtal;
+        let offset = (nominal as i64 * ppm as i64) / 1_000_000;
+        *self.xtal_freq.lock() = (nominal as i64 + offset) as u64;
         Ok(())
     }
 }

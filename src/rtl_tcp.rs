@@ -30,18 +30,24 @@ impl TcpServer {
         let (tx, _) = broadcast::channel::<Arc<Vec<u8>>>(128);
         let tx_clone = tx.clone();
 
-        // Task 1: Sample Relay
+        // Task 1: Sample Relay — exits on USB error or cancellation
         let mut raw_stream = driver.stream();
+        let cancel_relay = cancel_token.clone();
         tokio::spawn(async move {
-            while let Some(res) = raw_stream.next().await {
-                match res {
-                    Ok(samples) => {
-                        // Clone once into an Arc for broadcasting to multiple clients
-                        let _ = tx_clone.send(Arc::new(samples.to_vec()));
-                    }
-                    Err(e) => {
-                        error!("Hardware stream error: {:?}", e);
-                        break;
+            loop {
+                tokio::select! {
+                    _ = cancel_relay.cancelled() => break,
+                    res = raw_stream.next() => {
+                        match res {
+                            Some(Ok(samples)) => {
+                                let _ = tx_clone.send(Arc::new(samples.to_vec()));
+                            }
+                            Some(Err(e)) => {
+                                error!("Hardware stream error: {:?}", e);
+                                break;
+                            }
+                            None => break,
+                        }
                     }
                 }
             }
