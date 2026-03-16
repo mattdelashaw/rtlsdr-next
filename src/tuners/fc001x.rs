@@ -103,20 +103,31 @@ impl Tuner for Fc001x {
     fn set_frequency(&self, hz: u64) -> Result<u64> {
         let lo_freq = hz + *self.current_if.lock();
 
-        // FC001x uses multipliers of 2 or 4 only, derived from xtal/2.
-        // Divider and reg[5] values from Osmocom tuner_fc001x.c reference.
-        let (multi, reg5) = match self.tuner_type {
-            TunerType::FC0012 => {
-                if lo_freq < 300_000_000      { (32u64, 0x08u8) }
-                else if lo_freq < 862_000_000  { (16,    0x00) }
-                else                           { ( 4,    0x0a) }
-            }
-            _ /* FC0013 */ => {
-                if lo_freq < 300_000_000      { (32u64, 0x08u8) }
-                else if lo_freq < 862_000_000  { (16,    0x00) }
-                else if lo_freq < 948_600_000  { ( 4,    0x12) }
-                else                           { ( 2,    0x0a) }
-            }
+        // Select output divider to keep f_vco in [2.6 GHz, 3.9 GHz].
+        // Valid multipliers are powers of 2: 32, 16, 8, 4, 2.
+        // Frequencies that fall in gaps between bands return InvalidFrequency —
+        // this matches the real hardware's known dead zones.
+        const VCO_MIN: u64 = 2_600_000_000;
+        const VCO_MAX: u64 = 3_900_000_000;
+
+        let multi = [32u64, 16, 8, 4, 2]
+            .iter()
+            .copied()
+            .find(|&m| (VCO_MIN..=VCO_MAX).contains(&(lo_freq * m)))
+            .ok_or(Error::InvalidFrequency(hz))?;
+
+        // reg5 controls band filter and VCO divider select.
+        let reg5: u8 = match (self.tuner_type, multi) {
+            (TunerType::FC0012, 32) => 0x08, // VHF
+            (TunerType::FC0012, 16) => 0x00, // UHF low
+            (TunerType::FC0012, 8) => 0x00,  // UHF mid
+            (TunerType::FC0012, 4) => 0x0a,  // UHF high
+            (TunerType::FC0013, 32) => 0x08, // VHF
+            (TunerType::FC0013, 16) => 0x00, // UHF low
+            (TunerType::FC0013, 8) => 0x00,  // UHF mid
+            (TunerType::FC0013, 4) => 0x12,  // UHF high
+            (TunerType::FC0013, 2) => 0x0a,  // L-band
+            _ => 0x00,
         };
 
         // reg[6]: VCO select + integer/fractional mode
@@ -235,7 +246,7 @@ mod tests {
     fn test_fc0012_uhf() {
         let dev = Arc::new(MockHardware);
         let tuner = Fc001x::new(dev, TunerType::FC0012, 0xc2, 28_800_000);
-        // 434 MHz: multi=16, f_vco=6.944GHz — should be ok
+        // 434 MHz: multi=8, f_vco=3.472GHz — valid VCO range
         let res = tuner.set_frequency(434_000_000);
         assert!(res.is_ok());
     }
