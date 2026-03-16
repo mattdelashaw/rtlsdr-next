@@ -87,7 +87,7 @@ impl WebSdrServer {
 // ── HTTP Handlers ────────────────────────────────────────────────────────────
 
 async fn index_handler() -> impl IntoResponse {
-    axum::response::Html(include_str!("../examples/websdr_ui.html"))
+    axum::response::Html(include_str!("../assets/websdr_ui.html"))
 }
 
 // ── WebSocket Handler ────────────────────────────────────────────────────────

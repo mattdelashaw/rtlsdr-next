@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>rtlsdr-next WebSDR</title>
+    <style>
+        body { background: #111; color: #eee; font-family: sans-serif; margin: 0; padding: 20px; }
+        .controls { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; }
+        input[type="number"] { background: #222; color: #fff; border: 1px solid #444; padding: 5px; width: 120px; }
+        button { background: #007bff; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; }
+        button:hover { background: #0056b3; }
+        canvas { background: #000; display: block; width: 100%; image-rendering: pixelated; }
+        .status { margin-top: 10px; font-size: 0.9em; color: #888; }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <div>
+            Freq: <input type="number" id="freq" value="100000000"> Hz
+            <button onclick="setFreq()">Set</button>
+        </div>
+        <div>
+            Gain: <input type="range" id="gain" min="0" max="49.6" step="0.1" value="30" onchange="setGain()">
+        </div>
+        <div>
+            <button id="audio-btn" onclick="startAudio()">Start Audio</button>
+        </div>
+    </div>
+
+    <canvas id="waterfall" width="1024" height="600"></canvas>
+
+    <div class="status" id="status">Connecting...</div>
+
+    <script>
+        let ws;
+        let reconnectDelay = 1000;
+        const canvas = document.getElementById('waterfall');
+        const ctx = canvas.getContext('2d');
+        const status = document.getElementById('status');
+        
+        // Waterfall logic
+        const rowData = ctx.createImageData(canvas.width, 1);
+        
+        // Audio logic
+        let audioCtx = null;
+        let nextStartTime = 0;
+        const SAMPLE_RATE = 51200; // Match backend decimation
+        
+        function connect() {
+            ws = new WebSocket(`ws://${location.hostname || 'localhost'}:8080/ws`);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => { 
+                status.innerText = 'Connected to WebSDR Backend'; 
+                reconnectDelay = 1000;
+            };
+
+            ws.onclose = () => {
+                status.innerText = `Disconnected. Reconnecting in ${reconnectDelay/1000}s...`;
+                setTimeout(connect, reconnectDelay);
+                reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+            };
+
+            ws.onerror = () => { 
+                status.innerText = 'WebSocket Error'; 
+            };
+
+            ws.onmessage = (event) => {
+                if (typeof event.data === 'string') {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'hardwareinfo') {
+                        status.innerText = `Hardware: ${msg.manufacturer} ${msg.product} (V4: ${msg.is_v4})`;
+                    } else if (msg.type === 'freqconfirm') {
+                        document.getElementById('freq').value = msg.actual;
+                        status.innerText = `Tuned to ${msg.actual.toLocaleString()} Hz`;
+                    } else if (msg.type === 'gainconfirm') {
+                        document.getElementById('gain').value = msg.actual;
+                        status.innerText = `Gain set to ${msg.actual} dB`;
+                    } else if (msg.type === 'error') {
+                        status.innerText = `Error (${msg.cmd}): ${msg.msg}`;
+                        status.style.color = '#ff4444';
+                        setTimeout(() => { status.style.color = '#888'; }, 3000);
+                    }
+                    return;
+                }
+
+                // Handle Binary Data
+                const buffer = event.data;
+                const view = new DataView(buffer);
+                const type = String.fromCharCode(view.getUint8(0));
+
+                if (type === 'W') {
+                    // Waterfall Frame
+                    const magnitudes = new Uint8Array(buffer, 1);
+                    ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 1, canvas.width, canvas.height);
+                    for (let i = 0; i < magnitudes.length; i++) {
+                        const m = magnitudes[i];
+                        rowData.data[i * 4 + 0] = m > 128 ? m : 0; 
+                        rowData.data[i * 4 + 1] = m;               
+                        rowData.data[i * 4 + 2] = 255 - m;         
+                        rowData.data[i * 4 + 3] = 255;             
+                    }
+                    ctx.putImageData(rowData, 0, 0);
+                } else if (type === 'A' && audioCtx) {
+                    // Audio Frame (f32 samples)
+                    const samples = new Float32Array(buffer, 1);
+                    const audioBuffer = audioCtx.createBuffer(1, samples.length, SAMPLE_RATE);
+                    audioBuffer.getChannelData(0).set(samples);
+                    const source = audioCtx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioCtx.destination);
+                    
+                    const currentTime = audioCtx.currentTime;
+                    if (nextStartTime < currentTime) {
+                        nextStartTime = currentTime + 0.05; // 50ms guard buffer
+                    }
+                    source.start(nextStartTime);
+                    nextStartTime += audioBuffer.duration;
+                }
+            };
+        }
+
+        function setFreq() {
+            const hz = parseInt(document.getElementById('freq').value);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'setfrequency', hz }));
+            }
+        }
+
+        function setGain() {
+            const db = parseFloat(document.getElementById('gain').value);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'setgain', db }));
+            }
+        }
+
+        function startAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: SAMPLE_RATE
+                });
+                document.getElementById('audio-btn').innerText = 'Audio Active';
+            }
+        }
+
+        // Start connection
+        connect();
+    </script>
+</body>
+</html>
