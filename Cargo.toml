@@ -1,7 +1,7 @@
 [package]
 name = "rtlsdr-next"
 version = "0.1.0"
-authors = ["Matt Delashaw", "The AI scrum team"]
+authors = ["Matt Delashaw", "The DoubleAsterisks scrum team"]
 edition = "2024"
 license = "Apache-2.0"
 description = "A high-performance, async-native Rust driver for RTL2832U-based SDRs, with first-class support for the RTL-SDR Blog V4."

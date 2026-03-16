@@ -24,8 +24,8 @@
 //! - RTL-SDR dongle connected and not claimed by another process
 //! - USB permissions (udev rule or run with sudo)
 
-use rtlsdr_next::Driver;
 use env_logger::Env;
+use rtlsdr_next::Driver;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -43,13 +43,13 @@ async fn main() -> anyhow::Result<()> {
             println!("\nSetting frequency to 100 MHz (FM band)...");
             match driver.set_frequency(100_000_000) {
                 Ok(actual) => println!("  Success! Actual: {} Hz", actual),
-                Err(e)     => println!("  FAILED: {:?}", e),
+                Err(e) => println!("  FAILED: {:?}", e),
             }
 
             println!("\nSetting frequency to 7 MHz (HF — V4 upconverter path)...");
             match driver.set_frequency(7_000_000) {
                 Ok(actual) => println!("  Success! Actual: {} Hz", actual),
-                Err(e)     => println!("  FAILED: {:?}", e),
+                Err(e) => println!("  FAILED: {:?}", e),
             }
 
             println!("\nStreaming for 1 second...");
@@ -60,12 +60,19 @@ async fn main() -> anyhow::Result<()> {
             while start.elapsed().as_secs() < 1 {
                 match stream.next().await {
                     Some(Ok(samples)) => total_bytes += samples.len(),
-                    Some(Err(e))      => { println!("  Stream error: {:?}", e); break; }
-                    None              => break,
+                    Some(Err(e)) => {
+                        println!("  Stream error: {:?}", e);
+                        break;
+                    }
+                    None => break,
                 }
             }
 
-            println!("  Read {} bytes in {} ms", total_bytes, start.elapsed().as_millis());
+            println!(
+                "  Read {} bytes in {} ms",
+                total_bytes,
+                start.elapsed().as_millis()
+            );
             if total_bytes > 1_000_000 {
                 println!("  PASS — data rate looks healthy");
             } else {
@@ -79,7 +86,9 @@ async fn main() -> anyhow::Result<()> {
             println!("  2. Device busy — kill rtl_tcp, OpenWebRX, or other SDR processes");
             println!("  3. Hardware not connected or EEPROM corrupted");
             println!("\nEEPROM recovery (V4):");
-            println!("  ~/rtl-sdr-blog/build/src/rtl_eeprom -m RTLSDRBlog -p \"Blog V4\" -s 00000001");
+            println!(
+                "  ~/rtl-sdr-blog/build/src/rtl_eeprom -m RTLSDRBlog -p \"Blog V4\" -s 00000001"
+            );
         }
     }
 
