@@ -101,48 +101,64 @@ impl Tuner for Fc001x {
     fn set_frequency(&self, hz: u64) -> Result<u64> {
         let lo_freq = hz + *self.current_if.lock();
 
-        // Output divider selection
-        let (mult, div_reg) = if lo_freq < 37_080_000 {
-            (96, 7)
-        } else if lo_freq < 55_620_000 {
-            (64, 6)
-        } else if lo_freq < 74_160_000 {
-            (48, 5)
-        } else if lo_freq < 111_250_000 {
-            (32, 4)
-        } else if lo_freq < 148_330_000 {
-            (24, 3)
-        } else if lo_freq < 222_500_000 {
-            (16, 2)
-        } else if lo_freq < 445_000_000 {
-            (8, 1)
-        } else {
-            (4, 0)
+        // FC001x uses multipliers of 2 or 4 only, derived from xtal/2.
+        // Divider and reg[5] values from Osmocom tuner_fc001x.c reference.
+        let (multi, reg5) = match self.tuner_type {
+            TunerType::FC0012 => {
+                if lo_freq < 300_000_000      { (32u64, 0x08u8) }
+                else if lo_freq < 862_000_000  { (16,    0x00) }
+                else                           { ( 4,    0x0a) }
+            }
+            _ /* FC0013 */ => {
+                if lo_freq < 300_000_000      { (32u64, 0x08u8) }
+                else if lo_freq < 862_000_000  { (16,    0x00) }
+                else if lo_freq < 948_600_000  { ( 4,    0x12) }
+                else                           { ( 2,    0x0a) }
+            }
         };
 
-        let f_vco = lo_freq * mult;
-        let pll_int = f_vco / self.xtal_freq;
-        let pll_frac = ((f_vco % self.xtal_freq) << 15) / self.xtal_freq;
+        // reg[6]: VCO select + integer/fractional mode
+        let f_vco = lo_freq * multi;
+        let mut reg6: u8 = if (multi % 3) == 0 { 0x00 } else { 0x02 };
+        if f_vco >= 3_060_000_000 {
+            reg6 |= 0x08; // high VCO select
+        }
 
-        // Band selection (VHF/UHF) for FC0012/13
-        let band = if hz < 300_000_000 { 0 } else { 0x08 };
+        // xdiv = f_vco / (xtal / 2), rounded
+        let xtal_div2 = self.xtal_freq / 2;
+        let mut xdiv = (f_vco / xtal_div2) as u16;
+        if (f_vco - xdiv as u64 * xtal_div2) >= (xtal_div2 / 2) {
+            xdiv += 1; // round up
+        }
 
-        self.write_reg(0x05, (div_reg << 4) | band)?;
+        // am = xdiv % 8, pm = xdiv / 8
+        let mut pm = (xdiv / 8) as u8;
+        let mut am = (xdiv - 8 * pm as u16) as u8;
 
-        // PLL Integer part
-        // Reg 0x01: bits 0-5 of M (lower)
-        // Reg 0x02: bits 6-12 of M (upper)
-        // Note: Exact bit packing varies by source, this matches librtlsdr logic.
-        let am = (pll_int % 8) as u8;
-        let m = (pll_int / 8) as u8;
-        self.write_reg(0x01, am)?;
-        self.write_reg(0x02, m)?;
+        // am must be >= 2; if not, borrow from pm
+        if am < 2 {
+            am += 8;
+            pm = pm.saturating_sub(1);
+        }
 
-        // PLL Fractional part (15-bit)
-        self.write_reg(0x03, ((pll_frac >> 8) & 0x7f) as u8)?;
-        self.write_reg(0x04, (pll_frac & 0xff) as u8)?;
+        // pm overflow: fold excess into am
+        let (reg1, reg2) = if pm > 31 {
+            (am + 8 * (pm - 31), 31u8)
+        } else {
+            (am, pm)
+        };
 
-        // Specific fix for FC0013 high UHF performance (> 862 MHz)
+        // Validity check — matches Osmocom reference
+        if reg1 > 15 || reg2 < 0x0b {
+            return Err(Error::InvalidFrequency(hz));
+        }
+
+        self.write_reg(0x05, reg5)?;
+        self.write_reg(0x06, reg6)?;
+        self.write_reg(0x01, reg1)?;
+        self.write_reg(0x02, reg2)?;
+
+        // FC0013 high-UHF tweak (> 862 MHz)
         if self.tuner_type == TunerType::FC0013 && hz > 862_000_000 {
             self.write_reg(0x16, 0x0c)?;
         }
@@ -200,29 +216,31 @@ mod tests {
     use crate::device::MockHardware;
 
     #[test]
-    fn test_fc0012_freq_calc() {
+    fn test_fc0012_vhf() {
         let dev = Arc::new(MockHardware);
         let tuner = Fc001x::new(dev, TunerType::FC0012, 0xc2, 28_800_000);
-
-        // 100 MHz FM
-        // lo_freq = 100M + 0 (initial IF)
-        // mult = 32 (since 100M < 111.25M)
-        // f_vco = 100M * 32 = 3.2 GHz
-        // pll_int = 3.2G / 28.8M = 111.111... -> 111
-        // pll_frac = (0.111... * 2^15) = 3640
+        // 100 MHz FM: multi=32, f_vco=3.2GHz, xdiv=3200M/14.4M=222
+        // pm=27, am=6 — valid (am>=2, pm<=31)
         let res = tuner.set_frequency(100_000_000);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 100_000_000);
     }
 
     #[test]
-    fn test_fc0012_low_freq_div() {
+    fn test_fc0012_uhf() {
         let dev = Arc::new(MockHardware);
         let tuner = Fc001x::new(dev, TunerType::FC0012, 0xc2, 28_800_000);
+        // 434 MHz: multi=16, f_vco=6.944GHz — should be ok
+        let res = tuner.set_frequency(434_000_000);
+        assert!(res.is_ok());
+    }
 
-        // 30 MHz (Shortwave)
-        // lo_freq < 37.08M -> mult = 96
-        let res = tuner.set_frequency(30_000_000);
+    #[test]
+    fn test_fc0013_high_uhf() {
+        let dev = Arc::new(MockHardware);
+        let tuner = Fc001x::new(dev, TunerType::FC0013, 0xc6, 28_800_000);
+        // 900 MHz: FC0013-specific path
+        let res = tuner.set_frequency(900_000_000);
         assert!(res.is_ok());
     }
 }
