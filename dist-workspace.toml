@@ -8,7 +8,7 @@ cargo-dist-version = "0.31.0"
 # The installers to generate for each app
 installers = ["shell", "powershell", "homebrew", "msi"]
 # A GitHub repo to push Homebrew formulas to
-tap = "mdelash/homebrew-tap"
+tap = "mattdelashaw/homebrew-tap"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax)
