@@ -38,7 +38,6 @@ permissions:
 #
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
-# comment, lost my workflow
 on:
   pull_request:
   push:
