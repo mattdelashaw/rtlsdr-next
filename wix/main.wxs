@@ -62,7 +62,7 @@
         Id='*'
         Name='rtlsdr-next'
         UpgradeCode='7C50F061-A124-4959-98CC-E8230563A53A'
-        Manufacturer='Matt Delashaw; The AI scrum team'
+        Manufacturer='Matt Delashaw; The DoubleAsterisks scrum team'
         Language='1033'
         Codepage='1252'
         Version='$(var.Version)'>
@@ -70,7 +70,7 @@
         <Package Id='*'
             Keywords='Installer'
             Description='A high-performance, async-native Rust driver for RTL2832U-based SDRs, with first-class support for the RTL-SDR Blog V4.'
-            Manufacturer='Matt Delashaw; The AI scrum team'
+            Manufacturer='Matt Delashaw; The DoubleAsterisks scrum team'
             InstallerVersion='450'
             Languages='1033'
             Compressed='yes'
