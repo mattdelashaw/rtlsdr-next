@@ -3,6 +3,20 @@ name = "rtlsdr-next"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+description = "A high-performance, async-native Rust driver for RTL2832U-based SDRs, with first-class support for the RTL-SDR Blog V4."
+readme = "README.md"
+repository = "https://github.com/mattdelashaw/rtlsdr-next"
+homepage = "https://github.com/mattdelashaw/rtlsdr-next"
+keywords = ["sdr", "radio", "rtl-sdr", "rtl2832u", "driver"]
+categories = ["hardware-support", "multimedia::audio"]
+
+[[bin]]
+name = "rtl_tcp"
+path = "src/bin/rtl_tcp.rs"
+
+[[bin]]
+name = "websdr"
+path = "src/bin/websdr.rs"
 
 [lib]
 name = "rtlsdr_next"
@@ -19,7 +33,7 @@ byteorder = "1.5.0"
 env_logger = "0.11.5"
 futures-util = { version = "0.3.32", features = ["sink"] }
 libc = "0.2.182"
-libusb1-sys = "0.7.0"
+libusb1-sys = { version = "0.7.0", features = ["vendored"] }
 log = "0.4.22"
 rusb = "0.9.4"
 rustfft = "6.2.0"
@@ -52,18 +66,19 @@ name = "monitor"
 path = "examples/monitor.rs"
 
 [[example]]
-name = "rtl_tcp"
-path = "examples/rtl_tcp.rs"
-
-[[example]]
-name = "websdr"
-path = "examples/websdr.rs"
+name = "hw_probe"
+path = "examples/diag/hw_probe.rs"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 [build-dependencies]
 cc = "1.2.56"

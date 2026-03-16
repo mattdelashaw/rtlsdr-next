@@ -72,6 +72,7 @@ impl WebSdrServer {
 
         // 2. Web Server
         let app = Router::new()
+            .route("/", get(index_handler))
             .route("/ws", get(ws_handler))
             .with_state(state);
 
@@ -81,6 +82,12 @@ impl WebSdrServer {
 
         Ok(())
     }
+}
+
+// ── HTTP Handlers ────────────────────────────────────────────────────────────
+
+async fn index_handler() -> impl IntoResponse {
+    axum::response::Html(include_str!("../examples/websdr_ui.html"))
 }
 
 // ── WebSocket Handler ────────────────────────────────────────────────────────

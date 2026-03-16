@@ -29,7 +29,7 @@ Other RTL2832U dongles with R820T/R820T2/E4000 tuners should work — hardware v
 - **Automatic Tuner Probing:** I2C presence detection for Rafael Micro (R820T/R828D), Elonics (E4000), and Fitipower (FC0012/13).
 - **Zero-Copy Broadcasting:** Share a single hardware device across multiple local apps via `Arc`-based broadcasting.
 - **Precision Frequency Correction:** Integrated PPM correction for both tuner PLL and RTL2832U resampler.
-- **rtl_tcp Server:** Drop-in compatible server for OpenWebRX+, GQRX, SDR#, and other rtl_tcp clients.
+- **Standalone Tools:** Optimized `rtl_tcp` and `websdr` binaries for professional distribution.
 
 ## 🛠 Hardware: The V4 Deep Dive
 
@@ -145,12 +145,13 @@ This survives reboots but may need to be repeated if you plug into a different U
 CMD: `set RUST_LOG=info` then run the command separately.
 PowerShell: `$env:RUST_LOG = "info"; cargo run --release --example rtl_tcp`
 
-## 🏗 Building
+## 🏗 Building & Installation
 
 ```bash
 git clone https://github.com/mattdelashaw/rtlsdr-next
 cd rtlsdr-next
-cargo build --release
+# Install the library and binaries globally
+cargo install --path .
 ```
 
 For maximum Pi 5 performance, set the target CPU explicitly:
@@ -161,33 +162,44 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 
 On x86_64, `target-cpu=native` is not recommended — LLVM already auto-vectorizes well, and on Zen 4 CPUs AVX-512 activation causes frequency throttling that hurts sustained DSP throughput.
 
-## ▶️ Examples
+## ▶️ Usage
 
-### Main Examples
+### Standalone Tools
+
+Once installed, you can run the primary tools directly from your terminal:
+
+| Command | Description |
+|---------|-------------|
+| `rtl_tcp` | Standard RTL-SDR TCP server. Supports `-a/--address` and `-p/--port`. |
+| `websdr` | Browser-based SDR with waterfall. Supports `-a/--address` and `-p/--port`. |
+
+```bash
+# Start rtl_tcp server on all interfaces, port 1234
+rtl_tcp --address 0.0.0.0 --port 1234
+
+# Start WebSDR server
+websdr --address 0.0.0.0 --port 8080
+```
+
+### Development Examples
+
+These demonstrate library usage and provide quick functional tests. Run them with `cargo run --example`.
 
 | Example | Description |
 |---------|-------------|
 | `hw_probe` | **Start here.** Full driver smoke test — init, tune, stream 1s, report throughput. Clear PASS/FAIL output. |
-| `rtl_tcp` | rtl_tcp-compatible server. Connect GQRX, SDR#, or OpenWebRX+ as a network source. |
 | `fm_radio` | FM receiver with built-in demodulator. Outputs audio via the system audio device. |
-| `websdr` | WebSocket SDR server with waterfall and audio. Browse to `http://localhost:8080`. |
 | `monitor` | Continuous stream monitor — logs average signal magnitude and throughput every 10 blocks. |
 
 ```bash
 # Smoke test — run this first
 RUST_LOG=info cargo run --release --example hw_probe
 
-# rtl_tcp server — connect any SDR client
-RUST_LOG=info cargo run --release --example rtl_tcp -- --addr 0.0.0.0:1234
-
 # FM radio
 RUST_LOG=info cargo run --release --example fm_radio -- --freq 97.1e6
-
-# WebSDR
-RUST_LOG=info cargo run --release --example websdr
 ```
 
-### Diagnostic Examples
+### Diagnostic Tools
 
 These are raw USB tools used during driver development. They bypass the driver
 entirely and speak directly to the hardware via libusb. Run them when you need
@@ -197,7 +209,7 @@ to determine whether a problem is in the driver or the hardware.
 |---------|-------------|
 | `diag_write` | Scans all 8 USB control blocks for register responses. Use when debugging Pipe errors. |
 | `diag_i2c` | Probes demod read/write encoding patterns and validates the dummy-read flush requirement. |
-| `diag_demod` | Re-acquisition probe — tries up to 5 times to reclaim a busy/crashed USB interface. |
+| `diag_demod` | Re-acquisition pulse — tries up to 5 times to reclaim a busy/crashed USB interface. |
 | `diag_sys` | Dumps registers from USB/SYS/DEMOD blocks using both encoding patterns. |
 | `diag_raw_clone` | Replays the exact V4 init sequence raw. The definitive "hardware vs driver" test. |
 
@@ -211,6 +223,8 @@ cargo run --release --example diag_demod
 # Pipe errors on demod writes?
 cargo run --release --example diag_i2c
 ```
+
+
 
 ## 🧪 Testing
 
@@ -276,7 +290,7 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 - [x] **Phase 7: Zero-Allocation** — Buffer pooling, in-place processing
 - [x] **Phase 8: rtl_tcp Server** — Compatible with OpenWebRX+, GQRX, SDR#
 - [x] **Phase 9: Elonics E4000** — Full Zero-IF driver with manual gain control (theoretically)
-- [x] **Phase 10: Fitipower Tuners** — FC0012/FC0013 register maps (theoretically)
+- [x] **Phase 10: Fitipower Tuners** — FC0012/FC0013 register maps
 - [x] **Phase 11: Cross-Platform** — Windows confirmed working via Zadig/WinUSB; x86_64 LLVM auto-vectorization benchmarked, no manual SIMD needed
 - [ ] **Phase 12: Configurables** — Runtime buffer sizes, gain modes, bias-T persistence
 
