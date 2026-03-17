@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(output.len(), 4);
         // The first sample is always 0.0 due to DC initialization logic
         assert_eq!(output[0], 0.0); 
-        
+
         // Check that the demodulator is actually reacting to the 1.0 -> 0.5 drop
         // Since it's a high-pass/DC-removed signal, a drop in magnitude 
         // should result in a negative-going value.
