@@ -21,10 +21,6 @@ eula = false
 name = "rtl_tcp"
 path = "src/bin/rtl_tcp.rs"
 
-[[bin]]
-name = "websdr"
-path = "src/bin/websdr.rs"
-
 [lib]
 name = "rtlsdr_next"
 path = "src/lib.rs"
@@ -71,6 +67,10 @@ path = "examples/fm_radio.rs"
 [[example]]
 name = "monitor"
 path = "examples/monitor.rs"
+
+[[example]]
+name = "websdr"
+path = "examples/websdr.rs"
 
 [[example]]
 name = "hw_probe"
