@@ -5,20 +5,22 @@
     <title>rtlsdr-next WebSDR</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <style>
-        body { background: #0a0a0c; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; }
-        .controls { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; background: #1a1a1c; padding: 15px; border-radius: 8px; border: 1px solid #333; }
+        body { background: #0a0a0c; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; overflow-x: hidden; }
+        .controls { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; background: #1a1a1c; padding: 15px; border-radius: 8px; border: 1px solid #333; flex-wrap: wrap; }
         .freq-display { font-family: monospace; font-size: 1.5em; color: #00ff00; background: #000; padding: 5px 10px; border-radius: 4px; border: 1px solid #004400; min-width: 180px; text-align: right; }
         .input-group { display: flex; flex-direction: column; gap: 5px; }
         label { font-size: 0.8em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+        .label-val { color: #aaa; font-weight: bold; margin-left: 5px; }
         input[type="number"] { background: #222; color: #fff; border: 1px solid #444; padding: 8px; width: 100px; border-radius: 4px; outline: none; }
         input[type="number"]:focus { border-color: #007bff; }
         select { background: #222; color: #fff; border: 1px solid #444; padding: 8px; border-radius: 4px; outline: none; }
         button { background: #333; color: white; border: 1px solid #444; padding: 8px 15px; cursor: pointer; border-radius: 4px; transition: all 0.2s; }
         button:hover { background: #444; border-color: #666; }
         button.active { background: #007bff; border-color: #0056b3; }
-        canvas { background: #000; display: block; width: 100%; image-rendering: pixelated; border-radius: 4px; border: 1px solid #333; }
+        .canvas-container { position: relative; background: #000; border-radius: 4px; border: 1px solid #333; overflow: hidden; }
+        canvas { display: block; width: 100%; image-rendering: pixelated; }
         .status { margin-top: 10px; font-size: 0.9em; color: #888; display: flex; justify-content: space-between; }
-        .slider { width: 120px; }
+        .slider { width: 120px; vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -43,8 +45,12 @@
         </div>
 
         <div class="input-group">
-            <label>RF Gain (dB)</label>
-            <input type="range" class="slider" id="gain" min="0" max="49.6" step="0.1" value="30" onchange="setGain()">
+            <label>RF Gain <span id="gain-val" class="label-val">30.0 dB</span></label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <span style="font-size: 0.7em; color: #555;">0.0</span>
+                <input type="range" class="slider" id="gain" min="0" max="49.6" step="0.1" value="30" oninput="setGain()">
+                <span style="font-size: 0.7em; color: #555;">49.6</span>
+            </div>
         </div>
 
         <div class="input-group">
@@ -56,15 +62,17 @@
         </div>
 
         <div class="input-group">
-            <label>Audio Vol</label>
+            <label>Audio Vol <span id="vol-val" class="label-val">100%</span></label>
             <div style="display: flex; gap: 10px; align-items: center;">
                 <button id="audio-btn" onclick="toggleAudio()">Start Audio</button>
-                <input type="range" class="slider" id="volume" min="0" max="2" step="0.1" value="1.0" onchange="updateVolume()">
+                <input type="range" class="slider" id="volume" min="0" max="2" step="0.1" value="1.0" oninput="updateVolume()">
             </div>
         </div>
     </div>
 
-    <canvas id="waterfall" width="1024" height="600"></canvas>
+    <div class="canvas-container">
+        <canvas id="view" width="1024" height="800"></canvas>
+    </div>
 
     <div class="status">
         <div id="status">Connecting...</div>
@@ -74,16 +82,24 @@
     <script>
         let ws;
         let reconnectDelay = 1000;
-        const canvas = document.getElementById('waterfall');
+        const canvas = document.getElementById('view');
         const ctx = canvas.getContext('2d');
         const status = document.getElementById('status');
         const hwInfo = document.getElementById('hw-info');
         const freqInput = document.getElementById('freq-mhz');
         const freqDisplay = document.getElementById('freq-display');
         
+        // Layout Constants
+        const SPECTRUM_HEIGHT = 200;
+        const WATERFALL_HEIGHT = canvas.height - SPECTRUM_HEIGHT;
+        
         // Waterfall logic
         const rowData = ctx.createImageData(canvas.width, 1);
         
+        // Spectrum Smoothing
+        let smoothedMag = new Float32Array(canvas.width).fill(0);
+        const smoothing = 0.7;
+
         // Audio logic
         let audioCtx = null;
         let gainNode = null;
@@ -130,6 +146,7 @@
                         freqDisplay.innerText = msg.actual.toLocaleString().replace(/,/g, '.');
                     } else if (msg.type === 'gainconfirm') {
                         document.getElementById('gain').value = msg.actual;
+                        document.getElementById('gain-val').innerText = msg.actual.toFixed(1) + ' dB';
                     } else if (msg.type === 'demodconfirm') {
                         document.querySelectorAll('[id^="mode-"]').forEach(b => b.classList.remove('active'));
                         const btn = document.getElementById(`mode-${msg.actual}`);
@@ -144,17 +161,40 @@
 
                 if (type === 'W') {
                     const magnitudes = new Uint8Array(buffer, 1);
-                    ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 1, canvas.width, canvas.height);
+                    
+                    // 1. Draw Spectrum Line
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(0, 0, canvas.width, SPECTRUM_HEIGHT);
+                    
+                    ctx.strokeStyle = '#00ff00';
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    
                     for (let i = 0; i < magnitudes.length; i++) {
                         const m = magnitudes[i];
-                        rowData.data[i * 4 + 0] = Math.max(0, Math.min(255, (m - 128) * 2)); // Red
-                        rowData.data[i * 4 + 1] = Math.max(0, Math.min(255, 255 - Math.abs(m - 128) * 2)); // Green
-                        rowData.data[i * 4 + 2] = Math.max(0, Math.min(255, (128 - m) * 2)); // Blue
+                        smoothedMag[i] = (smoothedMag[i] * smoothing) + (m * (1.0 - smoothing));
+                        const y = SPECTRUM_HEIGHT - (smoothedMag[i] / 255 * (SPECTRUM_HEIGHT - 20)) - 10;
+                        if (i === 0) ctx.moveTo(i, y); else ctx.lineTo(i, y);
+                    }
+                    ctx.stroke();
+
+                    // 2. Shift and Draw Waterfall
+                    // Copy existing waterfall down one pixel
+                    ctx.drawImage(canvas, 
+                        0, SPECTRUM_HEIGHT, canvas.width, WATERFALL_HEIGHT - 1, 
+                        0, SPECTRUM_HEIGHT + 1, canvas.width, WATERFALL_HEIGHT - 1
+                    );
+                    
+                    for (let i = 0; i < magnitudes.length; i++) {
+                        const m = magnitudes[i];
+                        rowData.data[i * 4 + 0] = Math.max(0, Math.min(255, (m - 128) * 2)); 
+                        rowData.data[i * 4 + 1] = Math.max(0, Math.min(255, 255 - Math.abs(m - 128) * 2));
+                        rowData.data[i * 4 + 2] = Math.max(0, Math.min(255, (128 - m) * 2));
                         rowData.data[i * 4 + 3] = 255;             
                     }
-                    ctx.putImageData(rowData, 0, 0);
+                    ctx.putImageData(rowData, 0, SPECTRUM_HEIGHT);
+                    
                 } else if (type === 'A' && audioCtx && audioCtx.state === 'running') {
-                    // Start reading from offset 4 (skip 'A' and 3 bytes of padding)
                     const samples = new Float32Array(buffer, 4);
                     const audioBuffer = audioCtx.createBuffer(1, samples.length, SAMPLE_RATE);
                     audioBuffer.getChannelData(0).set(samples);
@@ -164,7 +204,7 @@
                     
                     const currentTime = audioCtx.currentTime;
                     if (nextStartTime < currentTime) {
-                        nextStartTime = currentTime + 0.1; // 100ms jitter buffer
+                        nextStartTime = currentTime + 0.1; 
                     }
                     source.start(nextStartTime);
                     nextStartTime += audioBuffer.duration;
@@ -181,6 +221,7 @@
 
         function setGain() {
             const db = parseFloat(document.getElementById('gain').value);
+            document.getElementById('gain-val').innerText = db.toFixed(1) + ' dB';
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'gain', db }));
             }
@@ -193,8 +234,10 @@
         }
 
         function updateVolume() {
+            const vol = parseFloat(document.getElementById('volume').value);
+            document.getElementById('vol-val').innerText = Math.round(vol * 100) + '%';
             if (gainNode) {
-                gainNode.gain.value = parseFloat(document.getElementById('volume').value);
+                gainNode.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.02);
             }
         }
 
@@ -207,6 +250,8 @@
                 gainNode.connect(audioCtx.destination);
                 updateVolume();
                 
+                nextStartTime = 0; // RESET start time on toggle
+                
                 if (audioCtx.state === 'suspended') {
                     audioCtx.resume();
                 }
@@ -214,10 +259,13 @@
                 document.getElementById('audio-btn').innerText = 'Audio ON';
                 document.getElementById('audio-btn').classList.add('active');
             } else {
-                audioCtx.close();
-                audioCtx = null;
-                document.getElementById('audio-btn').innerText = 'Start Audio';
-                document.getElementById('audio-btn').classList.remove('active');
+                audioCtx.close().then(() => {
+                    audioCtx = null;
+                    gainNode = null;
+                    nextStartTime = 0;
+                    document.getElementById('audio-btn').innerText = 'Start Audio';
+                    document.getElementById('audio-btn').classList.remove('active');
+                });
             }
         }
 
