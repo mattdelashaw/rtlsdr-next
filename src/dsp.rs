@@ -708,7 +708,12 @@ mod tests {
         let input = vec![1.0, 0.0, 0.5, 0.0, 1.0, 0.0, 0.5, 0.0];
         let output = am.process(&input);
         assert_eq!(output.len(), 4);
-        // We expect non-zero output as it's following the signal
-        assert!(output[0] > 0.0);
+        // The first sample is always 0.0 due to DC initialization logic
+        assert_eq!(output[0], 0.0); 
+        
+        // Check that the demodulator is actually reacting to the 1.0 -> 0.5 drop
+        // Since it's a high-pass/DC-removed signal, a drop in magnitude 
+        // should result in a negative-going value.
+        assert!(output[1] < 0.0, "Output should drop when magnitude decreases");
     }
 }
