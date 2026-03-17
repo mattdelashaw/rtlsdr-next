@@ -1,5 +1,5 @@
 use crate::Driver;
-use crate::dsp::{Decimator, FmDemodulator};
+use crate::dsp::{AmDemodulator, Decimator, FmDemodulator};
 use axum::{
     Router,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
@@ -15,12 +15,20 @@ use tokio::sync::{Mutex, broadcast};
 
 // ── WebSocket Protocol ──────────────────────────────────────────────────────
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum DemodMode {
+    Fm,
+    Am,
+    Off,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum Command {
     Frequency { hz: u64 },
     Gain { db: f32 },
-    Demod { mode: String }, // "fm", "am", "off"
+    Demod { mode: DemodMode },
 }
 
 #[derive(Serialize, Debug)]
@@ -46,6 +54,7 @@ pub struct WebSdrServer {
     driver: Arc<Mutex<Driver>>,
     waterfall_tx: broadcast::Sender<Vec<u8>>, // magnitude bytes (0-255)
     audio_tx: broadcast::Sender<Vec<f32>>,    // f32 audio samples
+    demod_tx: broadcast::Sender<DemodMode>,
 }
 
 impl WebSdrServer {
@@ -55,11 +64,13 @@ impl WebSdrServer {
         // Broadcast channels for waterfall and audio
         let (waterfall_tx, _) = broadcast::channel(16);
         let (audio_tx, _) = broadcast::channel(16);
+        let (demod_tx, _) = broadcast::channel(16);
 
         let state = Arc::new(Self {
             driver: driver.clone(),
             waterfall_tx: waterfall_tx.clone(),
             audio_tx: audio_tx.clone(),
+            demod_tx: demod_tx.clone(),
         });
 
         // 1. Hardware Pipeline Task (FFT + Demod)
@@ -217,7 +228,16 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                                 .await;
                         }
                     },
-                    Command::Demod { .. } => { /* TODO: Dynamic switch */ }
+                    Command::Demod { mode } => {
+                        let _ = state.demod_tx.send(mode);
+                        let reply = serde_json::json!({
+                            "type": "demodconfirm",
+                            "actual": mode,
+                        });
+                        let _ = cmd_reply_tx
+                            .send(Message::Text(reply.to_string().into()))
+                            .await;
+                    }
                 }
             }
         }
@@ -245,6 +265,10 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     };
 
     let mut fm = FmDemodulator::new();
+    let mut am = AmDemodulator::new();
+    let mut current_mode = DemodMode::Fm;
+    let mut demod_rx = state.demod_tx.subscribe();
+
     let mut planner = FftPlanner::new();
     let fft_size = 1024;
     let fft = planner.plan_fft_forward(fft_size);
@@ -252,6 +276,11 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut audio_decimator = Decimator::new(5, 0.1, 31); // 256k -> 51k (audio-ish)
 
     while let Some(res) = stream.next().await {
+        // Check for demod mode changes
+        while let Ok(mode) = demod_rx.try_recv() {
+            current_mode = mode;
+        }
+
         let iq_pooled = res?;
         let iq = &*iq_pooled;
 
@@ -273,8 +302,13 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
             let _ = state.waterfall_tx.send(mag);
         }
 
-        // 2. FM Demodulation
-        let audio_raw = fm.process(iq);
+        // 2. Demodulation
+        let audio_raw = match current_mode {
+            DemodMode::Fm => fm.process(iq),
+            DemodMode::Am => am.process(iq),
+            DemodMode::Off => continue,
+        };
+
         let audio_final = audio_decimator.process(&audio_raw);
         let _ = state.audio_tx.send(audio_final);
     }

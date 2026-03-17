@@ -148,6 +148,10 @@ impl R82xx {
         self.device.i2c_write_raw(self.i2c_addr, &[reg, new])
     }
 
+    fn write_reg_mask(&self, reg: u8, val: u8, mask: u8) -> Result<()> {
+        self.with_repeater(|| self.write_reg_mask_raw(reg, val, mask))
+    }
+
     /// Hold the I2C repeater open for the duration of a closure.
     /// Repeater is always closed on exit, even on error.
     fn with_repeater<F, T>(&self, f: F) -> Result<T>
@@ -280,7 +284,7 @@ impl R82xx {
         Ok(lo_freq_hz)
     }
 
-    fn set_bandwidth(&self, if_hz: u64) -> Result<()> {
+    fn set_if_bandwidth(&self, if_hz: u64) -> Result<()> {
         let (reg_0a, reg_0b) = if if_hz >= 3_500_000 {
             (0x10, 0x6b)
         } else {
@@ -337,7 +341,7 @@ impl Tuner for R82xx {
             self.write_reg_mask_raw(0x0c, 0x00, 0x0f)?;
             self.write_reg_mask_raw(0x13, 0x01, 0x3f)
         })?;
-        self.set_bandwidth(IF_FREQ_NARROW)?;
+        self.set_if_bandwidth(IF_FREQ_NARROW)?;
         Ok(())
     }
 
@@ -399,12 +403,28 @@ impl Tuner for R82xx {
 
     fn set_if_freq(&self, hz: u64) -> Result<()> {
         *self.current_if.lock() = hz;
-        self.set_bandwidth(hz)?;
+        self.set_if_bandwidth(hz)?;
         Ok(())
     }
 
     fn get_if_freq(&self) -> u64 {
         *self.current_if.lock()
+    }
+
+    fn set_bandwidth(&self, hz: u32) -> Result<()> {
+        // Standard R820T/R828D analog filter bandwidths:
+        // <= 6 MHz: 0x08 (binary 1000)
+        // <= 7 MHz: 0x06 (binary 0110)
+        // <= 8 MHz: 0x00 (binary 0000)
+        let val = if hz <= 6_000_000 {
+            0x08
+        } else if hz <= 7_000_000 {
+            0x06
+        } else {
+            0x00
+        };
+        // Bits 0-3 of register 0x0a
+        self.write_reg_mask(0x0a, val, 0x0f)
     }
 
     fn set_ppm(&self, ppm: i32) -> Result<()> {

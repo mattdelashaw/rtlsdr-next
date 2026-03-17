@@ -175,6 +175,9 @@ pub trait Tuner: Send + Sync {
     /// Get the current IF frequency in Hz.
     fn get_if_freq(&self) -> u64;
 
+    /// Set the tuner bandwidth in Hz.
+    fn set_bandwidth(&self, hz: u32) -> Result<()>;
+
     /// Set the crystal PPM correction.
     fn set_ppm(&self, ppm: i32) -> Result<()>;
 
@@ -193,7 +196,7 @@ pub trait Tuner: Send + Sync {
     }
 
     /// Set gain by index into the chip's gain table.
-    /// Used by rtl_tcp command 0x0d (SDR++ gain-by-index).
+    /// Used by rtl_tcp command 0x13 (SDR++ gain-by-index).
     /// Default: maps to lowest gain. Override in chip drivers with a known table.
     fn set_gain_by_index(&self, _idx: usize) -> Result<f32> {
         self.set_gain(0.0)

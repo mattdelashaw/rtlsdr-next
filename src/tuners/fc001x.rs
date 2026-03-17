@@ -218,6 +218,10 @@ impl Tuner for Fc001x {
         *self.current_if.lock()
     }
 
+    fn set_bandwidth(&self, _hz: u32) -> Result<()> {
+        Ok(())
+    }
+
     fn set_ppm(&self, ppm: i32) -> Result<()> {
         let nominal = self.nominal_xtal;
         let offset = (nominal as i64 * ppm as i64) / 1_000_000;

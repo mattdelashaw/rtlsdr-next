@@ -394,6 +394,47 @@ impl Default for FmDemodulator {
 }
 
 // ============================================================
+
+/// A magnitude-based AM demodulator.
+pub struct AmDemodulator {
+    dc_alpha: f32,
+    dc_mean: f32,
+}
+
+impl AmDemodulator {
+    pub fn new() -> Self {
+        Self {
+            dc_alpha: 0.01,
+            dc_mean: 0.0,
+        }
+    }
+
+    /// Process a block of interleaved I/Q samples.
+    /// Returns a vector of real (f32) demodulated samples.
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        let mut output = Vec::with_capacity(input.len() / 2);
+        for i in (0..input.len()).step_by(2) {
+            let i_val = input[i];
+            let q_val = input[i + 1];
+
+            // Magnitude
+            let mag = (i_val * i_val + q_val * q_val).sqrt();
+
+            // Simple IIR DC removal to center audio around 0.0
+            self.dc_mean = (1.0 - self.dc_alpha) * self.dc_mean + self.dc_alpha * mag;
+            output.push(mag - self.dc_mean);
+        }
+        output
+    }
+}
+
+impl Default for AmDemodulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -629,5 +670,16 @@ mod tests {
                 n
             );
         }
+    }
+
+    #[test]
+    fn test_am_demod() {
+        let mut am = AmDemodulator::new();
+        // Constant amplitude 1.0 -> 0.5 -> 1.0 -> 0.5
+        let input = vec![1.0, 0.0, 0.5, 0.0, 1.0, 0.0, 0.5, 0.0];
+        let output = am.process(&input);
+        assert_eq!(output.len(), 4);
+        // We expect non-zero output as it's following the signal
+        assert!(output[0] > 0.0);
     }
 }

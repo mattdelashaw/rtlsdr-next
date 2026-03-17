@@ -1,91 +1,43 @@
+use crate::Driver;
+use anyhow::Result;
 use byteorder::{BigEndian, ByteOrder};
-use log::{error, info, trace, warn};
+use log::{info, trace, warn};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::net::TcpListener;
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::Driver;
-
-// rtl_tcp protocol constants
-const RTL_TCP_MAGIC: &[u8; 4] = b"RTL0";
+const RTL_TCP_MAGIC: &[u8] = b"RTL0";
 
 pub struct TcpServer {
+    driver: Arc<Mutex<Driver>>,
+    addr: String,
     cancel_token: CancellationToken,
 }
 
 impl TcpServer {
-    /// Start an rtl_tcp compatible server.
-    /// This allows apps like OpenWebRX, SDR#, or GQRX to connect over the network.
-    pub async fn start(driver: Driver, addr: &str) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(addr).await?;
-        let addr = listener.local_addr()?;
-        info!("rtl_tcp server listening on {}", addr);
-
+    pub async fn start(driver: Driver, addr: &str) -> Result<Self> {
+        let driver = Arc::new(Mutex::new(driver));
         let cancel_token = CancellationToken::new();
-        let cancel_accept = cancel_token.clone();
 
-        // Create a broadcast channel for raw samples
-        let (tx, _) = broadcast::channel::<Arc<Vec<u8>>>(128);
-        let tx_clone = tx.clone();
+        let server = Self {
+            driver,
+            addr: addr.to_string(),
+            cancel_token,
+        };
 
-        // Task 1: Sample Relay — exits on USB error or cancellation
-        let mut raw_stream = driver.stream();
-        let cancel_relay = cancel_token.clone();
+        let s_driver = server.driver.clone();
+        let s_addr = server.addr.clone();
+        let s_token = server.cancel_token.clone();
+
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel_relay.cancelled() => break,
-                    res = raw_stream.next() => {
-                        match res {
-                            Some(Ok(samples)) => {
-                                let _ = tx_clone.send(Arc::new(samples.to_vec()));
-                            }
-                            Some(Err(e)) => {
-                                error!("Hardware stream error: {:?}", e);
-                                break;
-                            }
-                            None => break,
-                        }
-                    }
-                }
+            if let Err(e) = run_server(s_driver, &s_addr, s_token).await {
+                warn!("rtl_tcp server error: {:?}", e);
             }
         });
 
-        // Task 2: Accept Loop
-        let driver = Arc::new(tokio::sync::Mutex::new(driver));
-
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel_accept.cancelled() => break,
-                    accept_res = listener.accept() => {
-                        match accept_res {
-                            Ok((socket, client_addr)) => {
-                                info!("New client connected: {}", client_addr);
-                                let client_tx = tx.clone();
-                                let client_driver = driver.clone();
-                                let client_cancel = cancel_accept.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = handle_client(socket, client_tx, client_driver, client_cancel).await {
-                                        warn!("Client {} disconnected with error: {:?}", client_addr, e);
-                                    } else {
-                                        info!("Client {} disconnected", client_addr);
-                                    }
-                                });
-                            }
-                            Err(e) => {
-                                error!("TCP accept error: {:?}", e);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(Self { cancel_token })
+        Ok(server)
     }
 
     pub fn stop(&self) {
@@ -93,10 +45,77 @@ impl TcpServer {
     }
 }
 
+async fn run_server(
+    driver: Arc<Mutex<Driver>>,
+    addr: &str,
+    cancel_token: CancellationToken,
+) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    info!("rtl_tcp server listening on {}", addr);
+
+    let (tx, _) = broadcast::channel::<Arc<Vec<u8>>>(16);
+
+    // Stream task: pulls from driver and broadcasts to all clients
+    let stream_driver = driver.clone();
+    let stream_tx = tx.clone();
+    let stream_token = cancel_token.clone();
+
+    tokio::spawn(async move {
+        let mut stream = {
+            let d = stream_driver.lock().await;
+            d.stream()
+        };
+
+        loop {
+            tokio::select! {
+                _ = stream_token.cancelled() => break,
+                res = stream.next() => {
+                    match res {
+                        Some(Ok(samples)) => {
+                            let _ = stream_tx.send(Arc::new(samples.to_vec()));
+                        }
+                        Some(Err(e)) => {
+                            warn!("Stream error: {:?}", e);
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        info!("rtl_tcp stream task stopped");
+    });
+
+    loop {
+        tokio::select! {
+            _ = cancel_token.cancelled() => break,
+            res = listener.accept() => {
+                match res {
+                    Ok((socket, addr)) => {
+                        info!("rtl_tcp client connected: {}", addr);
+                        let client_driver = driver.clone();
+                        let client_tx = tx.clone();
+                        let client_token = cancel_token.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_client(client_driver, socket, client_tx, client_token).await {
+                                warn!("Client {} error: {:?}", addr, e);
+                            }
+                            info!("rtl_tcp client disconnected: {}", addr);
+                        });
+                    }
+                    Err(e) => warn!("Accept error: {:?}", e),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn handle_client(
-    mut socket: TcpStream,
+    driver: Arc<Mutex<Driver>>,
+    socket: tokio::net::TcpStream,
     tx: broadcast::Sender<Arc<Vec<u8>>>,
-    driver: Arc<tokio::sync::Mutex<Driver>>,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
     // 1. Send Handshake Header (12 bytes)
@@ -105,14 +124,26 @@ async fn handle_client(
     BigEndian::write_u32(&mut header[4..8], 5); // tuner_type
     BigEndian::write_u32(&mut header[8..12], 29); // gain_count
 
-    socket.write_all(&header).await?;
-
-    let mut client_rx = tx.subscribe();
-    // Use into_split to get owned halves for 'static tasks
+    socket.set_nodelay(true)?;
     let (mut reader, mut writer) = socket.into_split();
+
+    // Channel for unified writer task
+    let (writer_tx, mut writer_rx) = mpsc::channel::<Arc<Vec<u8>>>(128);
+
+    // Task: Unified Writer
+    let mut writer_task = tokio::spawn(async move {
+        while let Some(data) = writer_rx.recv().await {
+            if let Err(e) = writer.write_all(&data).await {
+                trace!("Writer task error: {:?}", e);
+                break;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
 
     // Task: Process commands from client
     let cmd_driver = driver.clone();
+    let cmd_writer_tx = writer_tx.clone();
     let mut cmd_task = tokio::spawn(async move {
         let mut buf = [0u8; 5];
         loop {
@@ -123,9 +154,16 @@ async fn handle_client(
             let mut d = cmd_driver.lock().await;
             trace!("Received command: {:?}, arg: {:?}", cmd, arg);
             match cmd {
-                // 0x0d: gain confirmation request — SDR++ sends after every 0x13
-                // We don't implement the response protocol, silently ignore.
-                0x0d => {}
+                // 0x0d: gain confirmation request — SDR++ sends after every 0x13.
+                // It expects a 4-byte BE response with the current gain set.
+                0x0d => {
+                    let gain = (d.tuner.get_gain().unwrap_or(0.0) * 10.0) as i32;
+                    let mut resp = vec![0u8; 4];
+                    BigEndian::write_i32(&mut resp, gain);
+                    if cmd_writer_tx.send(Arc::new(resp)).await.is_err() {
+                        break;
+                    }
+                }
                 0x01 => {
                     let r = d.set_frequency(arg as u64);
                     trace!("set_frequency({}) = {:?}", arg, r);
@@ -134,9 +172,6 @@ async fn handle_client(
                     let _ = d.set_sample_rate(arg);
                 }
                 // 0x03: set gain mode — 0=auto(AGC), 1=manual
-                // SDR++ sends manual mode but controls gain via 0x13 not 0x04.
-                // We apply a default 30dB if switching to Auto, or if Manual is
-                // requested but currently no gain is active (0.0).
                 0x03 => {
                     let current = d.tuner.get_gain().unwrap_or(0.0);
                     if arg == 0 || (arg == 1 && current < 1.0) {
@@ -149,12 +184,8 @@ async fn handle_client(
                 0x05 => {
                     let _ = d.set_ppm(arg as i32);
                 }
-                // 0x08: set RTL AGC mode (demod AGC) — ignore for now
-                // 0x09: set direct sampling — ignore (V4 handles this internally)
-                // 0x0a: set offset tuning — ignore
                 0x08..=0x0a => {}
                 // 0x13: set tuner gain by index — SDR++ gain slider
-                // arg is a direct index into the tuner's gain table (0-28 for R82xx)
                 0x13 => {
                     let _ = d.tuner.set_gain_by_index(arg as usize);
                 }
@@ -171,11 +202,15 @@ async fn handle_client(
     });
 
     // Task: Push samples to client
+    let data_writer_tx = writer_tx.clone();
+    let mut client_rx = tx.subscribe();
     let mut data_task = tokio::spawn(async move {
         loop {
             match client_rx.recv().await {
                 Ok(samples) => {
-                    writer.write_all(&samples).await?;
+                    if data_writer_tx.send(samples).await.is_err() {
+                        break;
+                    }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!("Client lagging, dropped {} blocks", n);
@@ -190,9 +225,11 @@ async fn handle_client(
         _ = cancel_token.cancelled() => {},
         _ = &mut cmd_task => {},
         _ = &mut data_task => {},
+        _ = &mut writer_task => {},
     }
-
     cmd_task.abort();
     data_task.abort();
+    writer_task.abort();
+
     Ok(())
 }

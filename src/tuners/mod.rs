@@ -29,6 +29,9 @@ impl Tuner for DummyTuner {
     fn get_if_freq(&self) -> u64 {
         0
     }
+    fn set_bandwidth(&self, _hz: u32) -> Result<()> {
+        Ok(())
+    }
     fn set_ppm(&self, _ppm: i32) -> Result<()> {
         Ok(())
     }

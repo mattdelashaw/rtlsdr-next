@@ -282,6 +282,7 @@ impl Driver {
         };
 
         self.tuner.set_if_freq(if_hz)?;
+        self.tuner.set_bandwidth(rate_hz)?;
 
         // Sample rate reset is heavy — restore everything after.
         demod::reset_demod(hw)?;
