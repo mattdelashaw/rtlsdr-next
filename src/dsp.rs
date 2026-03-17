@@ -73,13 +73,13 @@ pub fn design_lowpass(num_taps: usize, cutoff: f32) -> Vec<f32> {
 /// processing a continuous stream of RTL-SDR chunks.
 pub struct Decimator {
     /// FIR coefficients (length = num_taps, odd)
-    taps: Vec<f32>,
+    pub taps: Vec<f32>,
     /// Overlap-save history: last `taps.len() - 1` input samples
-    history: Vec<f32>,
+    pub history: Vec<f32>,
     /// Keep every Nth filtered sample
-    factor: usize,
+    pub factor: usize,
     /// Sample offset into the current block for correct phase tracking
-    phase: usize,
+    pub phase: usize,
 }
 
 impl Decimator {
@@ -103,11 +103,11 @@ impl Decimator {
 
     /// Convenience constructor that picks a sensible cutoff and tap count.
     ///
-    /// cutoff  = 0.45 / factor  (10% guard band before Nyquist)
-    /// num_taps = 4 * factor + 1  (scales with decimation ratio)
+    /// cutoff  = 0.8 / factor   (Widened to avoid clipping FM sidebands)
+    /// num_taps = 12 * factor + 1 (Higher quality rejection)
     pub fn with_factor(factor: usize) -> Self {
-        let cutoff = 0.45 / factor as f32;
-        let num_taps = 4 * factor + 1;
+        let cutoff = 0.8 / factor as f32;
+        let num_taps = 12 * factor + 1;
         Self::new(factor, cutoff, num_taps)
     }
 
@@ -355,11 +355,24 @@ impl Agc {
 /// (derivative of phase) of the complex input.
 pub struct FmDemodulator {
     last_phase: f32,
+    deemph_alpha: f32,
+    deemph_state: f32,
 }
 
 impl FmDemodulator {
     pub fn new() -> Self {
-        Self { last_phase: 0.0 }
+        Self {
+            last_phase: 0.0,
+            deemph_alpha: 1.0, // Default: no filtering
+            deemph_state: 0.0,
+        }
+    }
+
+    /// Set de-emphasis time constant (e.g., 75e-6 for US, 50e-6 for EU)
+    pub fn with_deemphasis(mut self, sample_rate: f32, tau: f32) -> Self {
+        let dt = 1.0 / sample_rate;
+        self.deemph_alpha = dt / (dt + tau);
+        self
     }
 
     /// Process a block of interleaved I/Q samples.
@@ -380,7 +393,11 @@ impl FmDemodulator {
                 diff += 2.0 * std::f32::consts::PI;
             }
 
-            output.push(diff);
+            // Apply de-emphasis (simple IIR low-pass)
+            self.deemph_state =
+                (1.0 - self.deemph_alpha) * self.deemph_state + self.deemph_alpha * diff;
+
+            output.push(self.deemph_state);
             self.last_phase = phase;
         }
         output
@@ -399,13 +416,17 @@ impl Default for FmDemodulator {
 pub struct AmDemodulator {
     dc_alpha: f32,
     dc_mean: f32,
+    hp_alpha: f32,
+    hp_state: f32,
 }
 
 impl AmDemodulator {
     pub fn new() -> Self {
         Self {
-            dc_alpha: 0.01,
+            dc_alpha: 0.005, // Slower EMA for base envelope
             dc_mean: 0.0,
+            hp_alpha: 0.05, // Faster HP filter for audio centering
+            hp_state: 0.0,
         }
     }
 
@@ -420,9 +441,17 @@ impl AmDemodulator {
             // Magnitude
             let mag = (i_val * i_val + q_val * q_val).sqrt();
 
-            // Simple IIR DC removal to center audio around 0.0
-            self.dc_mean = (1.0 - self.dc_alpha) * self.dc_mean + self.dc_alpha * mag;
-            output.push(mag - self.dc_mean);
+            // 1. EMA DC removal to extract audio envelope
+            if self.dc_mean == 0.0 {
+                self.dc_mean = mag;
+            } else {
+                self.dc_mean = (1.0 - self.dc_alpha) * self.dc_mean + self.dc_alpha * mag;
+            }
+            let envelope = mag - self.dc_mean;
+
+            // 2. Second-stage HP filter to center audio perfectly at 0.0
+            self.hp_state = (1.0 - self.hp_alpha) * self.hp_state + self.hp_alpha * envelope;
+            output.push(envelope - self.hp_state);
         }
         output
     }

@@ -189,7 +189,8 @@ impl<T: UsbContext> Drop for SampleStream<T> {
 /// A high-level DSP stream that produces interleaved F32 samples.
 pub struct F32Stream<T: UsbContext + 'static> {
     raw_stream: SampleStream<T>,
-    decimator: Option<Decimator>,
+    decimator_i: Option<Decimator>,
+    decimator_q: Option<Decimator>,
     dc_remover: Option<crate::dsp::DcRemover>,
     agc: Option<crate::dsp::Agc>,
 
@@ -199,6 +200,12 @@ pub struct F32Stream<T: UsbContext + 'static> {
 
     pool_dec_tx: mpsc::Sender<Vec<f32>>,
     pool_dec_rx: mpsc::Receiver<Vec<f32>>,
+
+    // Intermediate scratch buffers to avoid allocation
+    scratch_i: Vec<f32>,
+    scratch_q: Vec<f32>,
+    out_i: Vec<f32>,
+    out_q: Vec<f32>,
 }
 
 impl<T: UsbContext + 'static> F32Stream<T> {
@@ -207,10 +214,13 @@ impl<T: UsbContext + 'static> F32Stream<T> {
         decimation_factor: usize,
         config: StreamConfig,
     ) -> Self {
-        let decimator = if decimation_factor > 1 {
-            Some(Decimator::with_factor(decimation_factor))
+        let (decimator_i, decimator_q) = if decimation_factor > 1 {
+            (
+                Some(Decimator::with_factor(decimation_factor)),
+                Some(Decimator::with_factor(decimation_factor)),
+            )
         } else {
-            None
+            (None, None)
         };
 
         let (p1_tx, p1_rx) = mpsc::channel(config.num_buffers);
@@ -220,7 +230,7 @@ impl<T: UsbContext + 'static> F32Stream<T> {
 
         let (p2_tx, p2_rx) = mpsc::channel(config.num_buffers);
         if decimation_factor > 1 {
-            let decimated_size = config.buffer_size / decimation_factor + 16;
+            let decimated_size = (config.buffer_size / decimation_factor + 16) * 2;
             for _ in 0..config.num_buffers {
                 let _ = p2_tx.try_send(vec![0.0f32; decimated_size]);
             }
@@ -228,13 +238,18 @@ impl<T: UsbContext + 'static> F32Stream<T> {
 
         Self {
             raw_stream,
-            decimator,
+            decimator_i,
+            decimator_q,
             dc_remover: None,
             agc: None,
             pool_f32_tx: p1_tx,
             pool_f32_rx: p1_rx,
             pool_dec_tx: p2_tx,
             pool_dec_rx: p2_rx,
+            scratch_i: vec![0.0f32; config.buffer_size / 2],
+            scratch_q: vec![0.0f32; config.buffer_size / 2],
+            out_i: Vec::with_capacity(config.buffer_size / (2 * decimation_factor) + 16),
+            out_q: Vec::with_capacity(config.buffer_size / (2 * decimation_factor) + 16),
         }
     }
 
@@ -276,12 +291,36 @@ impl<T: UsbContext + 'static> F32Stream<T> {
             agc.process(&mut f32_buf);
         }
 
-        if let Some(dec) = &mut self.decimator {
+        if let Some(dec_i) = &mut self.decimator_i {
+            let dec_q = self.decimator_q.as_mut().unwrap();
+
+            // 1. Split I/Q into scratch buffers
+            let pairs = f32_buf.len() / 2;
+            if self.scratch_i.len() < pairs {
+                self.scratch_i.resize(pairs, 0.0);
+                self.scratch_q.resize(pairs, 0.0);
+            }
+
+            for i in 0..pairs {
+                self.scratch_i[i] = f32_buf[i * 2];
+                self.scratch_q[i] = f32_buf[i * 2 + 1];
+            }
+
+            // 2. Decimate separately
             let mut dec_buf = match self.pool_dec_rx.recv().await {
                 Some(b) => b,
                 None => return Some(Err(Error::ChannelClosed)),
             };
-            dec.process_into(&f32_buf, &mut dec_buf);
+
+            dec_i.process_into(&self.scratch_i[..pairs], &mut self.out_i);
+            dec_q.process_into(&self.scratch_q[..pairs], &mut self.out_q);
+
+            // 3. Re-interleave into output buffer
+            dec_buf.clear();
+            for (&i_val, &q_val) in self.out_i.iter().zip(self.out_q.iter()) {
+                dec_buf.push(i_val);
+                dec_buf.push(q_val);
+            }
 
             // Return intermediate buffer to pool. This runs in an async context
             // so we can await rather than risk dropping the buffer.

@@ -3,33 +3,73 @@
 <head>
     <meta charset="UTF-8">
     <title>rtlsdr-next WebSDR</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <style>
-        body { background: #111; color: #eee; font-family: sans-serif; margin: 0; padding: 20px; }
-        .controls { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; }
-        input[type="number"] { background: #222; color: #fff; border: 1px solid #444; padding: 5px; width: 120px; }
-        button { background: #007bff; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; }
-        button:hover { background: #0056b3; }
-        canvas { background: #000; display: block; width: 100%; image-rendering: pixelated; }
-        .status { margin-top: 10px; font-size: 0.9em; color: #888; }
+        body { background: #0a0a0c; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; }
+        .controls { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; background: #1a1a1c; padding: 15px; border-radius: 8px; border: 1px solid #333; }
+        .freq-display { font-family: monospace; font-size: 1.5em; color: #00ff00; background: #000; padding: 5px 10px; border-radius: 4px; border: 1px solid #004400; min-width: 180px; text-align: right; }
+        .input-group { display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 0.8em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+        input[type="number"] { background: #222; color: #fff; border: 1px solid #444; padding: 8px; width: 100px; border-radius: 4px; outline: none; }
+        input[type="number"]:focus { border-color: #007bff; }
+        select { background: #222; color: #fff; border: 1px solid #444; padding: 8px; border-radius: 4px; outline: none; }
+        button { background: #333; color: white; border: 1px solid #444; padding: 8px 15px; cursor: pointer; border-radius: 4px; transition: all 0.2s; }
+        button:hover { background: #444; border-color: #666; }
+        button.active { background: #007bff; border-color: #0056b3; }
+        canvas { background: #000; display: block; width: 100%; image-rendering: pixelated; border-radius: 4px; border: 1px solid #333; }
+        .status { margin-top: 10px; font-size: 0.9em; color: #888; display: flex; justify-content: space-between; }
+        .slider { width: 120px; }
     </style>
 </head>
 <body>
     <div class="controls">
-        <div>
-            Freq: <input type="number" id="freq" value="100000000"> Hz
-            <button onclick="setFreq()">Set</button>
+        <div class="input-group">
+            <label>Frequency (MHz)</label>
+            <div style="display: flex; gap: 5px; align-items: center;">
+                <input type="number" id="freq-mhz" value="100.000" step="0.001" onchange="updateFreq()">
+                <div class="freq-display" id="freq-display">100.000.000</div>
+            </div>
         </div>
-        <div>
-            Gain: <input type="range" id="gain" min="0" max="49.6" step="0.1" value="30" onchange="setGain()">
+
+        <div class="input-group">
+            <label>Step</label>
+            <select id="freq-step">
+                <option value="1.0">1 MHz</option>
+                <option value="0.1">100 kHz</option>
+                <option value="0.025">25 kHz</option>
+                <option value="0.0125">12.5 kHz</option>
+                <option value="0.001" selected>1 kHz</option>
+            </select>
         </div>
-        <div>
-            <button id="audio-btn" onclick="startAudio()">Start Audio</button>
+
+        <div class="input-group">
+            <label>RF Gain (dB)</label>
+            <input type="range" class="slider" id="gain" min="0" max="49.6" step="0.1" value="30" onchange="setGain()">
+        </div>
+
+        <div class="input-group">
+            <label>Mode</label>
+            <div style="display: flex; gap: 5px;">
+                <button id="mode-fm" class="active" onclick="setMode('fm')">FM</button>
+                <button id="mode-am" onclick="setMode('am')">AM</button>
+            </div>
+        </div>
+
+        <div class="input-group">
+            <label>Audio Vol</label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <button id="audio-btn" onclick="toggleAudio()">Start Audio</button>
+                <input type="range" class="slider" id="volume" min="0" max="2" step="0.1" value="1.0" onchange="updateVolume()">
+            </div>
         </div>
     </div>
 
     <canvas id="waterfall" width="1024" height="600"></canvas>
 
-    <div class="status" id="status">Connecting...</div>
+    <div class="status">
+        <div id="status">Connecting...</div>
+        <div id="hw-info">Hardware: Searching...</div>
+    </div>
 
     <script>
         let ws;
@@ -37,82 +77,94 @@
         const canvas = document.getElementById('waterfall');
         const ctx = canvas.getContext('2d');
         const status = document.getElementById('status');
+        const hwInfo = document.getElementById('hw-info');
+        const freqInput = document.getElementById('freq-mhz');
+        const freqDisplay = document.getElementById('freq-display');
         
         // Waterfall logic
         const rowData = ctx.createImageData(canvas.width, 1);
         
         // Audio logic
         let audioCtx = null;
+        let gainNode = null;
         let nextStartTime = 0;
-        const SAMPLE_RATE = 51200; // Match backend decimation
+        const SAMPLE_RATE = 51200; 
+
+        // Keyboard tuning
+        window.addEventListener('keydown', (e) => {
+            if (document.activeElement.tagName === 'INPUT') return;
+            const step = parseFloat(document.getElementById('freq-step').value);
+            if (e.key === 'ArrowUp') {
+                freqInput.value = (parseFloat(freqInput.value) + step).toFixed(4);
+                updateFreq();
+            } else if (e.key === 'ArrowDown') {
+                freqInput.value = (parseFloat(freqInput.value) - step).toFixed(4);
+                updateFreq();
+            }
+        });
         
         function connect() {
-            ws = new WebSocket(`ws://${location.hostname || 'localhost'}:8080/ws`);
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${location.hostname || 'localhost'}:8080/ws`);
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => { 
-                status.innerText = 'Connected to WebSDR Backend'; 
+                status.innerText = 'Connected to Backend'; 
                 reconnectDelay = 1000;
             };
 
             ws.onclose = () => {
-                status.innerText = `Disconnected. Reconnecting in ${reconnectDelay/1000}s...`;
+                status.innerText = `Disconnected. Reconnecting...`;
                 setTimeout(connect, reconnectDelay);
                 reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-            };
-
-            ws.onerror = () => { 
-                status.innerText = 'WebSocket Error'; 
             };
 
             ws.onmessage = (event) => {
                 if (typeof event.data === 'string') {
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'hardwareinfo') {
-                        status.innerText = `Hardware: ${msg.manufacturer} ${msg.product} (V4: ${msg.is_v4})`;
+                        hwInfo.innerText = `${msg.manufacturer} ${msg.product} (V4: ${msg.is_v4})`;
                     } else if (msg.type === 'freqconfirm') {
-                        document.getElementById('freq').value = msg.actual;
-                        status.innerText = `Tuned to ${msg.actual.toLocaleString()} Hz`;
+                        const mhz = (msg.actual / 1000000).toFixed(6);
+                        freqInput.value = mhz;
+                        freqDisplay.innerText = msg.actual.toLocaleString().replace(/,/g, '.');
                     } else if (msg.type === 'gainconfirm') {
                         document.getElementById('gain').value = msg.actual;
-                        status.innerText = `Gain set to ${msg.actual} dB`;
-                    } else if (msg.type === 'error') {
-                        status.innerText = `Error (${msg.cmd}): ${msg.msg}`;
-                        status.style.color = '#ff4444';
-                        setTimeout(() => { status.style.color = '#888'; }, 3000);
+                    } else if (msg.type === 'demodconfirm') {
+                        document.querySelectorAll('[id^="mode-"]').forEach(b => b.classList.remove('active'));
+                        const btn = document.getElementById(`mode-${msg.actual}`);
+                        if (btn) btn.classList.add('active');
                     }
                     return;
                 }
 
-                // Handle Binary Data
                 const buffer = event.data;
                 const view = new DataView(buffer);
                 const type = String.fromCharCode(view.getUint8(0));
 
                 if (type === 'W') {
-                    // Waterfall Frame
                     const magnitudes = new Uint8Array(buffer, 1);
                     ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 1, canvas.width, canvas.height);
                     for (let i = 0; i < magnitudes.length; i++) {
                         const m = magnitudes[i];
-                        rowData.data[i * 4 + 0] = m > 128 ? m : 0; 
-                        rowData.data[i * 4 + 1] = m;               
-                        rowData.data[i * 4 + 2] = 255 - m;         
+                        rowData.data[i * 4 + 0] = Math.max(0, Math.min(255, (m - 128) * 2)); // Red
+                        rowData.data[i * 4 + 1] = Math.max(0, Math.min(255, 255 - Math.abs(m - 128) * 2)); // Green
+                        rowData.data[i * 4 + 2] = Math.max(0, Math.min(255, (128 - m) * 2)); // Blue
                         rowData.data[i * 4 + 3] = 255;             
                     }
                     ctx.putImageData(rowData, 0, 0);
-                } else if (type === 'A' && audioCtx) {
-                    // Audio Frame (f32 samples)
-                    const samples = new Float32Array(buffer, 1);
+                } else if (type === 'A' && audioCtx && audioCtx.state === 'running') {
+                    // Start reading from offset 4 (skip 'A' and 3 bytes of padding)
+                    const samples = new Float32Array(buffer, 4);
                     const audioBuffer = audioCtx.createBuffer(1, samples.length, SAMPLE_RATE);
                     audioBuffer.getChannelData(0).set(samples);
                     const source = audioCtx.createBufferSource();
                     source.buffer = audioBuffer;
-                    source.connect(audioCtx.destination);
+                    source.connect(gainNode);
                     
                     const currentTime = audioCtx.currentTime;
                     if (nextStartTime < currentTime) {
-                        nextStartTime = currentTime + 0.05; // 50ms guard buffer
+                        nextStartTime = currentTime + 0.1; // 100ms jitter buffer
                     }
                     source.start(nextStartTime);
                     nextStartTime += audioBuffer.duration;
@@ -120,30 +172,55 @@
             };
         }
 
-        function setFreq() {
-            const hz = parseInt(document.getElementById('freq').value);
+        function updateFreq() {
+            const hz = Math.round(parseFloat(freqInput.value) * 1000000);
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'setfrequency', hz }));
+                ws.send(JSON.stringify({ type: 'frequency', hz }));
             }
         }
 
         function setGain() {
             const db = parseFloat(document.getElementById('gain').value);
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'setgain', db }));
+                ws.send(JSON.stringify({ type: 'gain', db }));
             }
         }
 
-        function startAudio() {
+        function setMode(mode) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'demod', mode }));
+            }
+        }
+
+        function updateVolume() {
+            if (gainNode) {
+                gainNode.gain.value = parseFloat(document.getElementById('volume').value);
+            }
+        }
+
+        function toggleAudio() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({
                     sampleRate: SAMPLE_RATE
                 });
-                document.getElementById('audio-btn').innerText = 'Audio Active';
+                gainNode = audioCtx.createGain();
+                gainNode.connect(audioCtx.destination);
+                updateVolume();
+                
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+                
+                document.getElementById('audio-btn').innerText = 'Audio ON';
+                document.getElementById('audio-btn').classList.add('active');
+            } else {
+                audioCtx.close();
+                audioCtx = null;
+                document.getElementById('audio-btn').innerText = 'Start Audio';
+                document.getElementById('audio-btn').classList.remove('active');
             }
         }
 
-        // Start connection
         connect();
     </script>
 </body>

@@ -73,7 +73,17 @@ impl WebSdrServer {
             demod_tx: demod_tx.clone(),
         });
 
-        // 1. Hardware Pipeline Task (FFT + Demod)
+        // 1. Initialize Hardware (Default to 100 MHz + 30dB if uninitialized)
+        {
+            let mut d = driver.lock().await;
+            if d.frequency == 0 {
+                info!("Initializing WebSDR hardware at 100.0 MHz / 30.0 dB...");
+                let _ = d.set_frequency(100_000_000);
+                let _ = d.tuner.set_gain(30.0);
+            }
+        }
+
+        // 2. Hardware Pipeline Task (FFT + Demod)
         let pipeline_state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = run_pipeline(pipeline_state).await {
@@ -85,6 +95,7 @@ impl WebSdrServer {
         let app = Router::new()
             .route("/", get(index_handler))
             .route("/ws", get(ws_handler))
+            .route("/favicon.ico", get(favicon_handler))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -101,6 +112,24 @@ async fn index_handler() -> impl IntoResponse {
     axum::response::Html(include_str!("../assets/websdr_ui.html"))
 }
 
+async fn favicon_handler() -> impl IntoResponse {
+    // We try to find the favicon in the assets directory.
+    // If it doesn't exist, we'll return a 404.
+    match tokio::fs::read("assets/favicon.ico").await {
+        Ok(bytes) => (
+            [(axum::http::header::CONTENT_TYPE, "image/x-icon")],
+            axum::response::Response::new(axum::body::Body::from(bytes)),
+        ),
+        Err(_) => (
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::NOT_FOUND)
+                .body(axum::body::Body::from("Favicon not found"))
+                .unwrap(),
+        ),
+    }
+}
+
 // ── WebSocket Handler ────────────────────────────────────────────────────────
 
 async fn ws_handler(
@@ -111,8 +140,8 @@ async fn ws_handler(
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
-    // Send initial hardware info
-    let (info, _freq, _gain) = {
+    // Send initial hardware info and state
+    let (info, freq, gain) = {
         let d = state.driver.lock().await;
         (
             d.info.clone(),
@@ -121,14 +150,41 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
         )
     };
 
-    let json = serde_json::to_string(&WebEvent::HardwareInfo {
-        manufacturer: info.manufacturer,
-        product: info.product,
-        is_v4: info.is_v4,
-    })
-    .expect("Serialization failed");
+    let _ = socket
+        .send(Message::Text(
+            serde_json::to_string(&WebEvent::HardwareInfo {
+                manufacturer: info.manufacturer,
+                product: info.product,
+                is_v4: info.is_v4,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await;
 
-    let _ = socket.send(Message::Text(json.into())).await;
+    // Sync UI with current tuner state
+    let _ = socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "freqconfirm",
+                "requested": freq,
+                "actual": freq,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await;
+
+    let _ = socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "gainconfirm",
+                "actual": gain,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await;
 
     let mut waterfall_rx = state.waterfall_tx.subscribe();
     let mut audio_rx = state.audio_tx.subscribe();
@@ -165,9 +221,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
     let audio_tx = ws_send_tx.clone();
     let mut audio_task = tokio::spawn(async move {
         while let Ok(data) = audio_rx.recv().await {
-            // Explicit Little-Endian conversion
-            let mut msg = Vec::with_capacity(1 + data.len() * 4);
+            // Use 4-byte header to maintain 4-byte alignment for Float32Array in the browser.
+            // [0] = 'A', [1,2,3] = padding, [4..] = f32 samples
+            let mut msg = Vec::with_capacity(4 + data.len() * 4);
             msg.push(b'A');
+            msg.push(0); 
+            msg.push(0);
+            msg.push(0);
             for &sample in data.iter() {
                 msg.extend_from_slice(&sample.to_le_bytes());
             }
@@ -260,11 +320,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
 async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut stream = {
         let d = state.driver.lock().await;
-        let stream: crate::stream::F32Stream<rusb::Context> = d.stream_f32(8);
-        stream.with_dc_removal(0.01).with_agc(1.0, 0.01, 0.01)
+        let stream: crate::stream::F32Stream<rusb::Context> = d.stream_f32(4);
+        stream.with_dc_removal(0.01).with_agc(2.0, 0.01, 0.01)
     };
 
-    let mut fm = FmDemodulator::new();
+    let mut fm = FmDemodulator::new().with_deemphasis(512_000.0, 75e-6);
     let mut am = AmDemodulator::new();
     let mut current_mode = DemodMode::Fm;
     let mut demod_rx = state.demod_tx.subscribe();
@@ -273,7 +333,20 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let fft_size = 1024;
     let fft = planner.plan_fft_forward(fft_size);
 
-    let mut audio_decimator = Decimator::new(5, 0.1, 31); // 256k -> 51k (audio-ish)
+    // Audio decimation: 512k -> 48k (factor 10.66... not integer, use approx 11)
+    // Or simpler: change baseband to 480k? No, let's just use 48k output by
+    // adjusting the decimation. 512 / 10.66 = 48.
+    // We'll use Decimator::new(factor, cutoff, taps).
+    // To get exactly 48k from 2048k, we need factor 42.66.
+    // Better: change Driver::stream_f32(4) to a factor that divides 2048 into a mult of 48.
+    // 2048 / 4 = 512.
+    // Let's use 2.4 MSPS instead? No, V4 is 2.048.
+    // Let's keep 51.2k for now but use 100 taps for high-fidelity.
+    let mut audio_decimator = Decimator::new(10, 0.05, 101); // 512k -> 51k
+
+    // Dynamic noise floor tracking for waterfall
+    let mut avg_pwr = 0.0f32;
+    let alpha = 0.05f32; // EMA smoothing
 
     while let Some(res) = stream.next().await {
         // Check for demod mode changes
@@ -292,11 +365,27 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
 
             fft.process(&mut buffer);
 
-            // Shift (center DC) and convert to magnitude bytes
+            // Calculate instantaneous power for noise floor tracking
+            let mut pwr_sum = 0.0;
+            for c in buffer.iter() {
+                pwr_sum += c.norm_sqr();
+            }
+            let inst_pwr = (pwr_sum / fft_size as f32).log10() * 10.0;
+            if avg_pwr == 0.0 {
+                avg_pwr = inst_pwr;
+            } else {
+                avg_pwr = (1.0 - alpha) * avg_pwr + alpha * inst_pwr;
+            }
+
+            // Shift (center DC) and convert to magnitude bytes using relative power
             let mut mag = vec![0u8; fft_size];
             for (i, m) in mag.iter_mut().enumerate().take(fft_size) {
                 let shifted = (i + fft_size / 2) % fft_size;
-                let val = (buffer[shifted].norm().log10() * 20.0 + 60.0).clamp(0.0, 255.0);
+                let bin_pwr = (buffer[shifted].norm_sqr().max(1e-12)).log10() * 10.0;
+                
+                // Scale signal relative to moving average noise floor
+                // Map [avg_pwr, avg_pwr + 30dB] -> [0, 255]
+                let val = ((bin_pwr - avg_pwr + 5.0) * 8.0).clamp(0.0, 255.0);
                 *m = val as u8;
             }
             let _ = state.waterfall_tx.send(mag);
