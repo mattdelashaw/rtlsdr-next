@@ -225,7 +225,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
             // [0] = 'A', [1,2,3] = padding, [4..] = f32 samples
             let mut msg = Vec::with_capacity(4 + data.len() * 4);
             msg.push(b'A');
-            msg.push(0); 
+
+            msg.push(0);
             msg.push(0);
             msg.push(0);
             for &sample in data.iter() {
@@ -382,7 +383,7 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
             for (i, m) in mag.iter_mut().enumerate().take(fft_size) {
                 let shifted = (i + fft_size / 2) % fft_size;
                 let bin_pwr = (buffer[shifted].norm_sqr().max(1e-12)).log10() * 10.0;
-                
+
                 // Scale signal relative to moving average noise floor
                 // Map [avg_pwr, avg_pwr + 30dB] -> [0, 255]
                 let val = ((bin_pwr - avg_pwr + 5.0) * 8.0).clamp(0.0, 255.0);
