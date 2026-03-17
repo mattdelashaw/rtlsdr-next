@@ -143,7 +143,6 @@ async fn handle_client(
 
     // Task: Process commands from client
     let cmd_driver = driver.clone();
-    let cmd_writer_tx = writer_tx.clone();
     let mut cmd_task = tokio::spawn(async move {
         let mut buf = [0u8; 5];
         loop {
@@ -154,16 +153,6 @@ async fn handle_client(
             let mut d = cmd_driver.lock().await;
             trace!("Received command: {:?}, arg: {:?}", cmd, arg);
             match cmd {
-                // 0x0d: gain confirmation request — SDR++ sends after every 0x13.
-                // It expects a 4-byte BE response with the current gain set.
-                0x0d => {
-                    let gain = (d.tuner.get_gain().unwrap_or(0.0) * 10.0) as i32;
-                    let mut resp = vec![0u8; 4];
-                    BigEndian::write_i32(&mut resp, gain);
-                    if cmd_writer_tx.send(Arc::new(resp)).await.is_err() {
-                        break;
-                    }
-                }
                 0x01 => {
                     let r = d.set_frequency(arg as u64);
                     trace!("set_frequency({}) = {:?}", arg, r);
@@ -177,9 +166,6 @@ async fn handle_client(
                     if arg == 0 || (arg == 1 && current < 1.0) {
                         let _ = d.tuner.set_gain(30.0);
                     }
-                }
-                0x04 => {
-                    let _ = d.tuner.set_gain(arg as f32 / 10.0);
                 }
                 0x05 => {
                     let _ = d.set_ppm(arg as i32);
