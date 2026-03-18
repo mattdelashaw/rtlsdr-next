@@ -1,12 +1,19 @@
 # rtlsdr-next: Project Context & Architecture
 
-This project is a high-performance, async-native Rust driver for RTL2832U-based SDRs, with first-class support for the **RTL-SDR Blog V4**.
+## 🛑 Mandates & Protocol
+
+1. **Inquiry vs. Directive:** 
+   - For **Inquiries** (questions, bug reports without "fix it", vague requests), you MUST research and propose a detailed strategy first. **DO NOT** implement changes until you receive confirmation.
+   - For **Directives** ("fix this", "implement X", "apply proposed plan"), you may proceed autonomously.
+   - Default to "Inquiry" mode if there is any ambiguity.
+
+2. **Hardware Safety:**
+   - Every `demod_write_reg` must be followed by a dummy read of `page 0x0a, reg 0x01` to sync the hardware.
+   - I2C writes must be chunked to 7 data bytes (+1 register byte) to avoid RTL2832U buffer overflows.
 
 ## 🏗 Architecture Overview
 
 - **`src/device.rs`**: Core USB communication via `rusb`. Implements the `HardwareInterface` trait.
-  - *Critical:* Every `demod_write_reg` must be followed by a dummy read of `page 0x0a, reg 0x01` to sync the hardware.
-  - *Critical:* I2C writes must be chunked to 7 data bytes (+1 register byte) to avoid RTL2832U buffer overflows.
 - **`src/lib.rs`**: The `Driver` orchestrator.
   - Handles V4-specific GPIO power-up (GPIO 4 & 5).
   - Manages the V4 HF upconverter (28.8 MHz offset) and spectral inversion.
@@ -51,6 +58,3 @@ This project is a high-performance, async-native Rust driver for RTL2832U-based 
   - Silently ignore command `0x0d` (gain confirmation) to avoid protocol errors.
   - Refined `rtl_tcp` command `0x03` (gain mode) to only apply a default 30dB gain when entering Auto mode or when Manual mode is requested while current gain is 0.
 - **Observability:** Added high-resolution timing logs to `set_frequency` and `set_sample_rate` for real-time performance tracking.
-
-## Gemini Added Memories
-- Always propose an approach and ask for confirmation before implementing changes for Inquiries. Only act autonomously when given a direct command (e.g., 'hey go do X').

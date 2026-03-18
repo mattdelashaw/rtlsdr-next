@@ -114,15 +114,22 @@ async fn run_server(
 
 async fn handle_client(
     driver: Arc<Mutex<Driver>>,
-    socket: tokio::net::TcpStream,
+    mut socket: tokio::net::TcpStream,
     tx: broadcast::Sender<Arc<Vec<u8>>>,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
     // 1. Send Handshake Header (12 bytes)
+    let tuner_id = {
+        let d = driver.lock().await;
+        d.tuner_type.id()
+    };
+
     let mut header = [0u8; 12];
     header[0..4].copy_from_slice(RTL_TCP_MAGIC);
-    BigEndian::write_u32(&mut header[4..8], 5); // tuner_type
+    BigEndian::write_u32(&mut header[4..8], tuner_id); // tuner_type
     BigEndian::write_u32(&mut header[8..12], 29); // gain_count
+
+    socket.write_all(&header).await?;
 
     socket.set_nodelay(true)?;
     let (mut reader, mut writer) = socket.into_split();

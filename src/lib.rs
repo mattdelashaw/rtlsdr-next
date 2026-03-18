@@ -28,6 +28,7 @@ pub use tuner::{BoardConfig, FilterRange, InputPath, Tuner};
 pub struct Driver {
     device: Arc<Device<rusb::Context>>,
     pub info: DeviceInfo,
+    pub tuner_type: TunerType,
     pub tuner: Box<dyn Tuner>,
     pub orchestrator: Box<dyn BoardOrchestrator>,
     pub sample_rate: u32,
@@ -174,6 +175,7 @@ impl Driver {
         Ok(Self {
             device,
             info,
+            tuner_type,
             tuner,
             orchestrator,
             sample_rate: DEFAULT_SAMPLE_RATE,

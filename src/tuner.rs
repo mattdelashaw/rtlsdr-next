@@ -10,6 +10,20 @@ pub enum TunerType {
     Unknown(u8),
 }
 
+impl TunerType {
+    pub fn id(&self) -> u32 {
+        match self {
+            TunerType::E4000 => 1,
+            TunerType::FC0012 => 2,
+            TunerType::FC0013 => 3,
+            // FC2580 is 4 (not implemented)
+            TunerType::R820T => 5,
+            TunerType::R828D => 6,
+            TunerType::Unknown(id) => *id as u32,
+        }
+    }
+}
+
 pub struct FilterRange {
     pub start_hz: u64,
     pub end_hz: u64,
