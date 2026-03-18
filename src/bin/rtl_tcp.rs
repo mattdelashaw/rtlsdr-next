@@ -3,6 +3,8 @@ use log::info;
 use rtlsdr_next::Driver;
 use std::env;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 struct Args {
     address: String,
     port: u16,
@@ -10,6 +12,13 @@ struct Args {
 
 fn parse_args() -> Result<Args> {
     let args: Vec<String> = env::args().collect();
+
+    // Check for --version flag first
+    if args.len() > 1 && (args[1] == "--version") {
+        println!("rtlsdr-next rtl_tcp server version: {}", VERSION);
+        std::process::exit(0); // Exit after printing version
+    }
+
     let mut address = "0.0.0.0".to_string();
     let mut port = 1234;
 
@@ -36,10 +45,12 @@ fn parse_args() -> Result<Args> {
             }
             "-h" | "--help" => {
                 println!("Usage: rtl_tcp [options]");
+                println!("Version: {}", VERSION); // Display version in help
                 println!("Options:");
                 println!("  -a, --address <addr>  Listening address (default: 0.0.0.0)");
                 println!("  -p, --port <port>     Listening port (default: 1234)");
                 println!("  -h, --help            What else do you expect?");
+                println!("  --version             Show version information and exit");
                 std::process::exit(0);
             }
             _ => {
@@ -57,6 +68,12 @@ async fn main() -> Result<()> {
 
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Version output is now handled in parse_args for --version flag,
+    // but we can also print it on startup for clarity if not exiting.
+    // If parse_args doesn't exit, it means version was not requested.
+    // So we can print it here as well if desired, or rely on --version.
+    // For now, relying on --version and help message is sufficient.
 
     info!("Starting rtlsdr-next rtl_tcp server...");
 
