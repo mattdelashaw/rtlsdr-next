@@ -174,6 +174,9 @@ async fn handle_client(
                         let _ = d.tuner.set_gain(30.0);
                     }
                 }
+                0x04 => {
+                    let _ = d.tuner.set_gain(arg as f32 / 10.0);
+                }
                 0x05 => {
                     let _ = d.set_ppm(arg as i32);
                 }
