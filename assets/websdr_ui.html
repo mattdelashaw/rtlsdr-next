@@ -121,7 +121,9 @@
         
         function connect() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${location.hostname || 'localhost'}:8080/ws`);
+            const port = window.location.port ? `:${window.location.port}` : '';
+            ws = new WebSocket(`${protocol}//${location.hostname || 'localhost'}${port}/ws`);
+
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => { 

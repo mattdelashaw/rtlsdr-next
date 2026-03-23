@@ -1,6 +1,6 @@
 [package]
 name = "rtlsdr-next"
-version = "1.0.2"
+version = "1.0.3"
 authors = ["Matt Delashaw", "The DoubleAsterisks scrum team"]
 edition = "2024"
 license = "Apache-2.0"
@@ -20,6 +20,10 @@ eula = false
 [[bin]]
 name = "rtl_tcp"
 path = "src/bin/rtl_tcp.rs"
+
+[[bin]]
+name = "websdr"
+path = "src/bin/websdr.rs"
 
 [lib]
 name = "rtlsdr_next"
@@ -67,10 +71,6 @@ path = "examples/fm_radio.rs"
 [[example]]
 name = "monitor"
 path = "examples/monitor.rs"
-
-[[example]]
-name = "websdr"
-path = "examples/websdr.rs"
 
 [[example]]
 name = "hw_probe"

@@ -16,7 +16,8 @@ Designed for the modern era (2026+), this driver moves away from the legacy C ca
 | Dongle | Tuner | Host | Clients Tested |
 |--------|-------|------|----------------|
 | RTL-SDR Blog V4 | R828D | Raspberry Pi 5 (Bookworm) | OpenWebRX+, GQRX, SDR++ |
-| RTL-SDR Blog V4 | R828D | Windows 11 x86_64 (AMD Ryzen 7600X) | Corona SDR (IOS) |
+| RTL-SDR Blog V4 | R828D | Windows 11 x86_64 (AMD Ryzen 7600X) | Corona SDR (iOS) |
+| RTL-SDR Blog V4 | R828D | Raspberry Pi 5 (Bookworm) | SpectralBands (iOS, WebSDR protocol) |
 
 Other RTL2832U dongles with R820T/R820T2/E4000 tuners should work — hardware verification welcome.
 
@@ -170,8 +171,8 @@ Once installed, you can run the primary tools directly from your terminal:
 
 | Command | Description |
 |---------|-------------|
-| `rtl_tcp` | Standard RTL-SDR TCP server. Supports `-a/--address` and `-p/--port`. |
-| `websdr` | Browser-based SDR with waterfall. Supports `-a/--address` and `-p/--port`. |
+| `rtl_tcp` | Standard RTL-SDR TCP server. Compatible with OpenWebRX+, GQRX, SDR++. Supports `-a/--address` and `-p/--port`. |
+| `websdr` | WebSocket SDR server. Streams decoded audio (48kHz PCM) and waterfall data to browser and native clients. Supports `-a/--address` and `-p/--port`. |
 
 ```bash
 # Start rtl_tcp server on all interfaces, port 1234

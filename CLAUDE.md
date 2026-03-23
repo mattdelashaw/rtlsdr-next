@@ -21,7 +21,7 @@ Async Rust RTL-SDR driver. Tokio-native stream architecture. Primary target: RTL
 
 ## Repo Layout
 - `src/bin/rtl_tcp.rs` — installable rtl_tcp server binary (`-a/--address`, `-p/--port`)
-- `src/bin/websdr.rs` — REMOVED from bin, back to `examples/websdr.rs`
+- `src/bin/websdr.rs` — installable WebSDR server binary (`-a/--address`, `-p/--port`)
 - `examples/` — fm_radio, monitor, hw_probe, diag_*
 - `examples/diag/` — raw USB diagnostic tools (bypass driver, speak libusb directly)
 - `assets/websdr_ui.html` — WebSDR frontend, embedded via `include_str!()`

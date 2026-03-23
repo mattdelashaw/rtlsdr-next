@@ -298,6 +298,23 @@ impl DcRemover {
             data[i + 1] = q_val - self.avg_q;
         }
     }
+
+    /// Process separate I and Q arrays (avoids interleave/deinterleave overhead).
+    pub fn process_split(&mut self, i_buf: &mut [f32], q_buf: &mut [f32]) {
+        let n = i_buf.len().min(q_buf.len());
+        let a = self.alpha;
+        let b = 1.0 - a;
+        let mut si = self.avg_i;
+        let mut sq = self.avg_q;
+        for k in 0..n {
+            si = a * i_buf[k] + b * si;
+            i_buf[k] -= si;
+            sq = a * q_buf[k] + b * sq;
+            q_buf[k] -= sq;
+        }
+        self.avg_i = si;
+        self.avg_q = sq;
+    }
 }
 
 // ============================================================
