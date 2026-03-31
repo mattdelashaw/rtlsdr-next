@@ -6,10 +6,12 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use axum_server::tls_rustls::RustlsConfig;
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info};
 use rustfft::{FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 
@@ -84,7 +86,11 @@ pub struct WebSdrServer {
 }
 
 impl WebSdrServer {
-    pub async fn start(driver: Driver, addr: &str) -> anyhow::Result<()> {
+    pub async fn start(
+        driver: Driver,
+        addr: &str,
+        tls: Option<(PathBuf, PathBuf)>,
+    ) -> anyhow::Result<()> {
         let driver = Arc::new(Mutex::new(driver));
 
         let (waterfall_tx, _) = broadcast::channel(16);
@@ -124,9 +130,17 @@ impl WebSdrServer {
             .route("/favicon.ico", get(favicon_handler))
             .with_state(state);
 
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        info!("WebSDR listening on http://{}", addr);
-        axum::serve(listener, app).await?;
+        if let Some((cert, key)) = tls {
+            info!("WebSDR listening on https://{} (wss://)", addr);
+            let config = RustlsConfig::from_pem_file(cert, key).await?;
+            axum_server::bind_rustls(addr.parse()?, config)
+                .serve(app.into_make_service())
+                .await?;
+        } else {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            info!("WebSDR listening on http://{} (ws://)", addr);
+            axum::serve(listener, app).await?;
+        }
         Ok(())
     }
 }

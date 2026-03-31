@@ -172,15 +172,34 @@ Once installed, you can run the primary tools directly from your terminal:
 | Command | Description |
 |---------|-------------|
 | `rtl_tcp` | Standard RTL-SDR TCP server. Compatible with OpenWebRX+, GQRX, SDR++. Supports `-a/--address` and `-p/--port`. |
-| `websdr` | WebSocket SDR server. Streams decoded audio (48kHz PCM) and waterfall data to browser and native clients. Supports `-a/--address` and `-p/--port`. |
+| `websdr` | WebSocket SDR server. Streams decoded audio (48kHz PCM) and waterfall data. Supports `-a/--address`, `-p/--port`, and **TLS/SSL** (`wss://`). |
 
 ```bash
 # Start rtl_tcp server on all interfaces, port 1234
 rtl_tcp --address 0.0.0.0 --port 1234
 
-# Start WebSDR server
+# Start WebSDR server (standard ws://)
 websdr --address 0.0.0.0 --port 8080
+
+# Start WebSDR server with TLS (wss://)
+websdr --address 0.0.0.0 --port 8080 --cert cert.pem --key key.pem
 ```
+
+#### 🔒 Secure WebSDR (wss://)
+
+To support secure connections (required by many modern browsers and iOS App Transport Security when using public domains), you can provide a PEM-encoded certificate and private key.
+
+**Using Let's Encrypt:**
+If you have a domain pointing to your host, you can use `certbot` to generate a certificate and point `websdr` to the generated files:
+```bash
+websdr --port 8080 --cert /etc/letsencrypt/live/yourdomain.com/fullchain.pem --key /etc/letsencrypt/live/yourdomain.com/privkey.pem
+```
+
+**Using Self-Signed (for testing):**
+```bash
+openssl req -x509 -newkey rsa:4048 -keyout key.pem -out cert.pem -days 365 -nodes
+```
+*Note: iOS clients will require you to manually trust the root certificate if using self-signed.*
 
 ### Development Examples
 

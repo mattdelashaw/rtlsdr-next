@@ -1,6 +1,6 @@
 [package]
 name = "rtlsdr-next"
-version = "1.0.3"
+version = "1.0.4"
 authors = ["Matt Delashaw", "The DoubleAsterisks scrum team"]
 edition = "2024"
 license = "Apache-2.0"
@@ -36,6 +36,8 @@ bench-c = []
 [dependencies]
 anyhow = "1.0.102"
 axum = { version = "0.8.1", features = ["ws"] }
+axum-server = { version = "0.7.1", features = ["tls-rustls"] }
+rustls-pemfile = "2.1"
 byteorder = "1.5.0"
 env_logger = "0.11.5"
 futures-util = { version = "0.3.32", features = ["sink"] }

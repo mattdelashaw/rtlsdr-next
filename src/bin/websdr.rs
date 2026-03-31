@@ -2,16 +2,21 @@ use anyhow::{Context, Result};
 use rtlsdr_next::Driver;
 use rtlsdr_next::websdr::WebSdrServer;
 use std::env;
+use std::path::PathBuf;
 
 struct Args {
     address: String,
     port: u16,
+    cert: Option<PathBuf>,
+    key: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args> {
     let args: Vec<String> = env::args().collect();
     let mut address = "0.0.0.0".to_string();
     let mut port = 8080;
+    let mut cert = None;
+    let mut key = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -34,12 +39,30 @@ fn parse_args() -> Result<Args> {
                     anyhow::bail!("Missing value for port");
                 }
             }
+            "--cert" => {
+                if i + 1 < args.len() {
+                    cert = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                } else {
+                    anyhow::bail!("Missing value for cert");
+                }
+            }
+            "--key" => {
+                if i + 1 < args.len() {
+                    key = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                } else {
+                    anyhow::bail!("Missing value for key");
+                }
+            }
             "-h" | "--help" => {
                 println!("Usage: websdr [options]");
                 println!("Options:");
                 println!("  -a, --address <addr>  Listening address (default: 0.0.0.0)");
                 println!("  -p, --port <port>     Listening port (default: 8080)");
-                println!("  -h, --help            What else do you expect?");
+                println!("  --cert <path>         Path to SSL certificate (.pem)");
+                println!("  --key <path>          Path to SSL private key (.pem)");
+                println!("  -h, --help            Show this help");
                 std::process::exit(0);
             }
             _ => {
@@ -48,7 +71,12 @@ fn parse_args() -> Result<Args> {
         }
     }
 
-    Ok(Args { address, port })
+    Ok(Args {
+        address,
+        port,
+        cert,
+        key,
+    })
 }
 
 #[tokio::main]
@@ -61,9 +89,16 @@ async fn main() -> Result<()> {
     // 1. Open device
     let driver = Driver::new()?;
 
-    // 2. Start the WebSdr server
+    // 2. Prepare TLS config
+    let tls = if let (Some(c), Some(k)) = (args.cert, args.key) {
+        Some((c, k))
+    } else {
+        None
+    };
+
+    // 3. Start the WebSdr server
     let addr = format!("{}:{}", args.address, args.port);
-    WebSdrServer::start(driver, &addr).await?;
+    WebSdrServer::start(driver, &addr, tls).await?;
 
     Ok(())
 }
