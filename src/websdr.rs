@@ -50,6 +50,7 @@ enum Command {
     Frequency { hz: u64 },
     Gain { db: f32 },
     Demod { mode: DemodMode },
+    Bandwidth { hz: u32 },
 }
 
 #[derive(Serialize, Debug)]
@@ -83,6 +84,7 @@ pub struct WebSdrServer {
     /// Audio PCM at AUDIO_SAMPLE_RATE, wrapped in Arc to avoid copies on broadcast.
     audio_tx: broadcast::Sender<Arc<Vec<f32>>>,
     demod_tx: broadcast::Sender<DemodMode>,
+    bandwidth_tx: broadcast::Sender<u32>,
 }
 
 impl WebSdrServer {
@@ -96,12 +98,14 @@ impl WebSdrServer {
         let (waterfall_tx, _) = broadcast::channel(16);
         let (audio_tx, _) = broadcast::channel(16);
         let (demod_tx, _) = broadcast::channel(16);
+        let (bandwidth_tx, _) = broadcast::channel(16);
 
         let state = Arc::new(Self {
             driver: driver.clone(),
             waterfall_tx,
             audio_tx,
             demod_tx,
+            bandwidth_tx,
         });
 
         {
@@ -266,6 +270,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
     let cmd_driver = state.driver.clone();
     let cmd_demod_tx = state.demod_tx.clone();
     let cmd_reply_tx = ws_tx.clone();
+    let state_clone = state.clone();
     let mut cmd_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             let Ok(cmd) = serde_json::from_str::<Command>(&text) else {
@@ -305,6 +310,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                         .send(Message::Text(reply.to_string().into()))
                         .await;
                 }
+                Command::Bandwidth { hz } => {
+                    let _ = state_clone.bandwidth_tx.send(hz);
+                    let reply = serde_json::json!({"type":"bandwidthconfirm","actual":hz});
+                    let _ = cmd_reply_tx
+                        .send(Message::Text(reply.to_string().into()))
+                        .await;
+                }
             }
         }
     });
@@ -333,6 +345,7 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
 
     let mut current_mode = DemodMode::Wfm;
     let mut demod_rx = state.demod_tx.subscribe();
+    let mut bandwidth_rx = state.bandwidth_tx.subscribe();
 
     // ── Demodulators ────────────────────────────────────────────────────────
     // de-emphasis at the 192kHz intermediate rate before post-decimation
@@ -342,6 +355,10 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut am = AmDemodulator::new();
     let mut ssb_usb = crate::dsp::SsbDemodulator::new(true);
     let mut ssb_lsb = crate::dsp::SsbDemodulator::new(false);
+
+    // ── Audio AGC ──────────────────────────────────────────────────────────
+    // target=-15dBFS (0.17), attack=0.1, decay=0.001, hang=500ms
+    let mut audio_agc = crate::dsp::AudioAgc::new(0.17, 0.1, 0.001, 500.0, AUDIO_SAMPLE_RATE as f32);
 
     // ── Decimation chains ────────────────────────────────────────────────────
     // WFM:  ÷8 → 192kHz → discriminate → ÷4 → 48kHz
@@ -390,6 +407,17 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     while let Some(res) = stream.next().await {
         while let Ok(mode) = demod_rx.try_recv() {
             current_mode = mode;
+        }
+        while let Ok(bw) = bandwidth_rx.try_recv() {
+            // Update filter cutoffs based on requested audio bandwidth.
+            // bw is one-sided audio Hz, we need two-sided IQ Hz for the decimator.
+            let iq_bw = bw as f32 * 2.0;
+            let normalized = iq_bw / PIPELINE_SAMPLE_RATE as f32;
+            pre_i_ssb.update_cutoff(normalized);
+            pre_q_ssb.update_cutoff(normalized);
+            pre_i_am.update_cutoff(normalized);
+            pre_q_am.update_cutoff(normalized);
+            info!("WebSDR Filter Bandwidth set to {} Hz (IQ: {} Hz)", bw, iq_bw);
         }
         if current_mode == DemodMode::Off {
             continue;
@@ -527,6 +555,8 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
         if !audio.is_empty() {
             // Treat the mono signal as interleaved data with 0-step for DC removal
             dc_audio.process(&mut audio);
+            // Apply Audio AGC (Post-demod)
+            audio_agc.process(&mut audio);
             let _ = state.audio_tx.send(Arc::new(audio));
         }
     }

@@ -162,6 +162,11 @@ impl Decimator {
         self.history.fill(0.0);
         self.phase = 0;
     }
+
+    /// Update the FIR cutoff frequency without clearing history.
+    pub fn update_cutoff(&mut self, cutoff: f32) {
+        self.taps = design_lowpass(self.taps.len(), cutoff);
+    }
 }
 
 // ============================================================
@@ -358,6 +363,56 @@ impl Agc {
 
             data[i] *= self.gain;
             data[i + 1] *= self.gain;
+        }
+    }
+}
+
+/// A post-demodulation Audio AGC with "Hang Time".
+///
+/// Designed for SSB and AM where signal-burstiness causes standard AGC to "pump".
+/// Holds gain steady for `hang_time_samples` before starting to decay.
+pub struct AudioAgc {
+    gain: f32,
+    target: f32,
+    attack: f32,
+    decay: f32,
+    hang_time_samples: usize,
+    hang_counter: usize,
+}
+
+impl AudioAgc {
+    pub fn new(target: f32, attack: f32, decay: f32, hang_time_ms: f32, sample_rate: f32) -> Self {
+        Self {
+            gain: 1.0,
+            target,
+            attack,
+            decay,
+            hang_time_samples: (hang_time_ms * sample_rate / 1000.0) as usize,
+            hang_counter: 0,
+        }
+    }
+
+    pub fn process(&mut self, data: &mut [f32]) {
+        for val in data.iter_mut() {
+            let mag = val.abs();
+            let error = self.target / (mag + 1e-6);
+
+            if error < self.gain {
+                // Attack: signal got louder, reduce gain immediately
+                self.gain = (1.0 - self.attack) * self.gain + self.attack * error;
+                self.hang_counter = self.hang_time_samples;
+            } else {
+                // Decay: signal got quieter
+                if self.hang_counter > 0 {
+                    self.hang_counter -= 1;
+                } else {
+                    self.gain = (1.0 - self.decay) * self.gain + self.decay * error;
+                }
+            }
+
+            *val *= self.gain;
+            // Clamp to avoid digital clipping
+            *val = val.clamp(-1.0, 1.0);
         }
     }
 }
@@ -714,7 +769,7 @@ mod tests {
 
         assert_eq!(output.len(), 128 / 4);
 
-        // Skip transient: ceil(num_taps / (2 * factor)) + 1
+        // Skip transient: ceil(num_taps / (2 * 4)) + 1
         let skip = (17 / (2 * 4)) + 2;
         for &v in &output[skip..] {
             assert!((v - 1.0).abs() < 0.01, "DC passthrough failed: {}", v);
@@ -864,5 +919,38 @@ mod tests {
             output[1] < 0.0,
             "Output should drop when magnitude decreases"
         );
+    }
+
+    #[test]
+    fn test_audio_agc_hang_time() {
+        let mut agc = AudioAgc::new(1.0, 1.0, 0.01, 10.0, 1000.0); // 10 samples hang
+        
+        // 1. Signal at target
+        let mut data = vec![1.0f32; 1];
+        agc.process(&mut data);
+        assert!((data[0] - 1.0).abs() < 0.1);
+        
+        // 2. Signal drops to zero
+        let mut silence = vec![0.0f32; 5];
+        agc.process(&mut silence);
+        // Gain should hang (stay near 1.0)
+        assert!((agc.gain - 1.0).abs() < 1e-5);
+        assert_eq!(agc.hang_counter, 5); // 10 - 5 = 5 remaining
+        
+        // 3. More silence
+        let mut more_silence = vec![0.0f32; 10];
+        agc.process(&mut more_silence);
+        // After 5 more samples, gain starts to increase (error = target/eps is huge)
+        assert!(agc.gain > 1.0);
+        assert_eq!(agc.hang_counter, 0);
+    }
+
+    #[test]
+    fn test_decimator_update_cutoff() {
+        let mut dec = Decimator::new(4, 0.1, 17);
+        let taps_orig = dec.taps.clone();
+        dec.update_cutoff(0.2);
+        assert_ne!(dec.taps, taps_orig);
+        assert_eq!(dec.taps.len(), 17);
     }
 }

@@ -85,7 +85,7 @@
         .btn-group button.active { background: var(--accent); color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
 
         .slider-container { display: flex; align-items: center; gap: 10px; }
-        input[type="range"] { -webkit-appearance: none; background: #1a1e26; height: 4px; border-radius: 2px; width: 100px; }
+        input[type="range"] { -webkit-appearance: none; background: #1a1e26; height: 4px; border-radius: 2px; width: 100px; appearance: none; }
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; background: var(--accent); border-radius: 50%; cursor: pointer; }
 
         /* --- Main Layout --- */
@@ -478,6 +478,10 @@
         function setMode(mode) {
             if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'demod', mode }));
         }
+        function setBandwidth() {
+            const hz = parseInt(document.getElementById('bw-slider').value);
+            if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'bandwidth', hz }));
+        }
         function updateVol() {
             const v = document.getElementById('vol-slider').value;
             if (gainNode) gainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.02);
@@ -494,6 +498,17 @@
             const pct = x / rect.width;
             const start = state.frequency - (state.span / 2);
             const targetHz = Math.round(start + (pct * state.span));
+            setFrequency(targetHz);
+        });
+
+        connect();
+    </script>
+</body>
+</html>
+pt>
+</body>
+</html>
+ = Math.round(start + (pct * state.span));
             setFrequency(targetHz);
         });
 
