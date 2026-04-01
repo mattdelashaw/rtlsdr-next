@@ -106,7 +106,10 @@ impl WebSdrServer {
 
         {
             let mut d = driver.lock().await;
-            info!("Initializing WebSDR hardware ({} Hz)...", PIPELINE_SAMPLE_RATE);
+            info!(
+                "Initializing WebSDR hardware ({} Hz)...",
+                PIPELINE_SAMPLE_RATE
+            );
             if let Err(e) = d.set_sample_rate(PIPELINE_SAMPLE_RATE) {
                 error!("CRITICAL: Failed to set sample rate: {:?}", e);
             }

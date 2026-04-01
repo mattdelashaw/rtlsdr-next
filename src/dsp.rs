@@ -457,9 +457,10 @@ impl HilbertFilter {
                 let a1 = 0.48829;
                 let a2 = 0.14128;
                 let a3 = 0.01168;
-                let w = a0 - a1 * (2.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos()
-                           + a2 * (4.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos()
-                           - a3 * (6.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos();
+                let w = a0
+                    - a1 * (2.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos()
+                    + a2 * (4.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos()
+                    - a3 * (6.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos();
                 taps[i] = val * w;
             } else {
                 taps[i] = 0.0;
@@ -476,7 +477,7 @@ impl HilbertFilter {
         output.clear();
         let taps_len = self.taps.len();
         let overlap = taps_len - 1;
-        
+
         let mut extended = Vec::with_capacity(overlap + input.len());
         extended.extend_from_slice(&self.history);
         extended.extend_from_slice(input);
@@ -520,7 +521,7 @@ impl SsbDemodulator {
         let n = input.len() / 2;
         let mut i_branch = Vec::with_capacity(n);
         let mut q_branch = Vec::with_capacity(n);
-        
+
         for k in 0..n {
             i_branch.push(input[k * 2]);
             q_branch.push(input[k * 2 + 1]);
@@ -532,7 +533,7 @@ impl SsbDemodulator {
         // 2. Combine with delayed I branch
         let mut output = Vec::with_capacity(n);
         let delay = self.i_history.len();
-        
+
         // Build extended I branch for delay matching
         let mut i_extended = Vec::with_capacity(delay + n);
         i_extended.extend_from_slice(&self.i_history);
@@ -541,7 +542,7 @@ impl SsbDemodulator {
         for k in 0..n {
             let i_val = i_extended[k];
             let q_hat = self.q_shifted[k];
-            
+
             // Phasing formula: USB = I - Q_hat, LSB = I + Q_hat
             if self.is_usb {
                 output.push(i_val - q_hat);
