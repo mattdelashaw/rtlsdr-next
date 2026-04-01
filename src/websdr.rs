@@ -106,12 +106,11 @@ impl WebSdrServer {
 
         {
             let mut d = driver.lock().await;
+            info!("Initializing WebSDR hardware ({} Hz)...", PIPELINE_SAMPLE_RATE);
+            if let Err(e) = d.set_sample_rate(PIPELINE_SAMPLE_RATE) {
+                error!("CRITICAL: Failed to set sample rate: {:?}", e);
+            }
             if d.frequency == 0 {
-                info!(
-                    "WebSDR init: 101.1 MHz / 30 dB / {} kSPS",
-                    PIPELINE_SAMPLE_RATE / 1000
-                );
-                let _ = d.set_sample_rate(PIPELINE_SAMPLE_RATE);
                 let _ = d.set_frequency(101_100_000);
                 let _ = d.tuner.set_gain(30.0);
             }
@@ -152,19 +151,11 @@ async fn index_handler() -> impl IntoResponse {
 }
 
 async fn favicon_handler() -> impl IntoResponse {
-    match tokio::fs::read("assets/favicon.ico").await {
-        Ok(bytes) => (
-            [(axum::http::header::CONTENT_TYPE, "image/x-icon")],
-            axum::response::Response::new(axum::body::Body::from(bytes)),
-        ),
-        Err(_) => (
-            [(axum::http::header::CONTENT_TYPE, "text/plain")],
-            axum::response::Response::builder()
-                .status(axum::http::StatusCode::NOT_FOUND)
-                .body(axum::body::Body::from("Favicon not found"))
-                .unwrap(),
-        ),
-    }
+    const ICON: &[u8] = include_bytes!("../assets/favicon.ico");
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/x-icon")],
+        axum::response::Response::new(axum::body::Body::from(ICON)),
+    )
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
@@ -346,12 +337,14 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut fm_wfm = FmDemodulator::new().with_deemphasis(intermediate_rate_wfm, 75e-6);
     let mut fm_nfm = FmDemodulator::new();
     let mut am = AmDemodulator::new();
+    let mut ssb_usb = crate::dsp::SsbDemodulator::new(true);
+    let mut ssb_lsb = crate::dsp::SsbDemodulator::new(false);
 
     // ── Decimation chains ────────────────────────────────────────────────────
     // WFM:  ÷8 → 192kHz → discriminate → ÷4 → 48kHz
     // NFM:  ÷16 → 96kHz → discriminate → ÷2 → 48kHz
     // AM:   ÷16 → 96kHz → envelope → ÷2 → 48kHz
-    // SSB:  stub (÷32 → 48kHz direct, needs Hilbert filter in dsp.rs)
+    // SSB:  ÷32 → 48kHz → phased discriminate
     let mut pre_i_wfm = Decimator::new(8, 0.45 / 8.0, 31);
     let mut pre_q_wfm = Decimator::new(8, 0.45 / 8.0, 31);
     let mut post_wfm = Decimator::new(4, 0.45 / 4.0, 65);
@@ -360,11 +353,16 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut pre_q_nfm = Decimator::new(16, 0.45 / 16.0, 31);
     let mut post_nfm = Decimator::new(2, 0.45 / 2.0, 65);
 
-    let mut pre_i_am = Decimator::new(16, 0.45 / 16.0, 31);
-    let mut pre_q_am = Decimator::new(16, 0.45 / 16.0, 31);
-    let mut post_am = Decimator::new(2, 0.45 / 2.0, 65);
+    let mut pre_i_am = Decimator::new(32, 6000.0 / PIPELINE_SAMPLE_RATE as f32, 63);
+    let mut pre_q_am = Decimator::new(32, 6000.0 / PIPELINE_SAMPLE_RATE as f32, 63);
+    // No post_am needed if pre is 32
 
-    let mut dc = crate::dsp::DcRemover::new(0.001);
+    // 6.4kHz total bandwidth (±3.2kHz) is the standard for high-fidelity SSB
+    let mut pre_i_ssb = Decimator::new(32, 6400.0 / PIPELINE_SAMPLE_RATE as f32, 127);
+    let mut pre_q_ssb = Decimator::new(32, 6400.0 / PIPELINE_SAMPLE_RATE as f32, 127);
+
+    let mut dc_iq = crate::dsp::DcRemover::new(0.01);
+    let mut dc_audio = crate::dsp::DcRemover::new(0.01);
 
     // ── Scratch buffers (allocated once) ────────────────────────────────────
     let mut i_buf: Vec<f32> = Vec::new();
@@ -425,8 +423,10 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
             q_buf[k] = iq_interleaved[k * 2 + 1];
         }
 
-        // DC removal on split buffers
-        dc.process_split(&mut i_buf, &mut q_buf);
+        // Remove DC spike for all modes EXCEPT AM (which needs the carrier)
+        if current_mode != DemodMode::Am {
+            dc_iq.process_split(&mut i_buf, &mut q_buf);
+        }
 
         // ── Spectrum / Waterfall ────────────────────────────────────────────
         let now = std::time::Instant::now();
@@ -456,7 +456,7 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
         }
 
         // ── Demodulation ────────────────────────────────────────────────────
-        let audio: Vec<f32> = match current_mode {
+        let mut audio: Vec<f32> = match current_mode {
             DemodMode::Wfm => {
                 pre_i_wfm.process_into(&i_buf, &mut i_dec);
                 pre_q_wfm.process_into(&q_buf, &mut q_dec);
@@ -471,17 +471,18 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
                 audio_out.clone()
             }
             DemodMode::Nfm => {
-                pre_i_nfm.process_into(&i_buf, &mut i_dec);
-                pre_q_nfm.process_into(&q_buf, &mut q_dec);
+                // Fixed: 1.536M / 32 = 48k (No post filter needed)
+                let mut pre_i_nfm_32 = Decimator::new(32, 0.45 / 32.0, 31);
+                let mut pre_q_nfm_32 = Decimator::new(32, 0.45 / 32.0, 31);
+                pre_i_nfm_32.process_into(&i_buf, &mut i_dec);
+                pre_q_nfm_32.process_into(&q_buf, &mut q_dec);
                 let len = i_dec.len().min(q_dec.len());
                 iq_interleaved.resize(len * 2, 0.0);
                 for k in 0..len {
                     iq_interleaved[k * 2] = i_dec[k];
                     iq_interleaved[k * 2 + 1] = q_dec[k];
                 }
-                let disc = fm_nfm.process(&iq_interleaved[..len * 2]);
-                post_nfm.process_into(&disc, &mut audio_out);
-                audio_out.clone()
+                fm_nfm.process(&iq_interleaved[..len * 2])
             }
             DemodMode::Am => {
                 pre_i_am.process_into(&i_buf, &mut i_dec);
@@ -492,16 +493,37 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
                     iq_interleaved[k * 2] = i_dec[k];
                     iq_interleaved[k * 2 + 1] = q_dec[k];
                 }
-                let env = am.process(&iq_interleaved[..len * 2]);
-                post_am.process_into(&env, &mut audio_out);
-                audio_out.clone()
+                am.process(&iq_interleaved[..len * 2])
             }
-            // TODO: USB/LSB — needs HilbertFilter in dsp.rs (port from iOS SSBDemodulator)
-            DemodMode::Usb | DemodMode::Lsb => vec![],
+            DemodMode::Usb => {
+                pre_i_ssb.process_into(&i_buf, &mut i_dec);
+                pre_q_ssb.process_into(&q_buf, &mut q_dec);
+                let len = i_dec.len().min(q_dec.len());
+                iq_interleaved.resize(len * 2, 0.0);
+                for k in 0..len {
+                    iq_interleaved[k * 2] = i_dec[k];
+                    iq_interleaved[k * 2 + 1] = q_dec[k];
+                }
+                ssb_usb.process(&iq_interleaved[..len * 2])
+            }
+            DemodMode::Lsb => {
+                pre_i_ssb.process_into(&i_buf, &mut i_dec);
+                pre_q_ssb.process_into(&q_buf, &mut q_dec);
+                let len = i_dec.len().min(q_dec.len());
+                iq_interleaved.resize(len * 2, 0.0);
+                for k in 0..len {
+                    iq_interleaved[k * 2] = i_dec[k];
+                    iq_interleaved[k * 2 + 1] = q_dec[k];
+                }
+                ssb_lsb.process(&iq_interleaved[..len * 2])
+            }
             DemodMode::Off => continue,
         };
 
+        // Apply DC removal to AUDIO output only (clears hiss, centers waveform)
         if !audio.is_empty() {
+            // Treat the mono signal as interleaved data with 0-step for DC removal
+            dc_audio.process(&mut audio);
             let _ = state.audio_tx.send(Arc::new(audio));
         }
     }

@@ -428,6 +428,135 @@ impl Default for FmDemodulator {
 }
 
 // ============================================================
+// SSB Demodulation (USB/LSB)
+// ============================================================
+
+/// A FIR Hilbert transformer.
+///
+/// Shifts the phase of a signal by exactly 90 degrees.
+/// Used in the phasing method for SSB demodulation.
+pub struct HilbertFilter {
+    taps: Vec<f32>,
+    history: Vec<f32>,
+}
+
+impl HilbertFilter {
+    /// Create a new Hilbert filter with N taps (must be odd).
+    pub fn new(num_taps: usize) -> Self {
+        assert!(num_taps % 2 == 1, "Hilbert taps must be odd");
+        let mut taps = vec![0.0f32; num_taps];
+        let mid = num_taps / 2;
+
+        for i in 0..num_taps {
+            let n = i as i32 - mid as i32;
+            if n % 2 != 0 {
+                // Ideal Hilbert kernel: 2 / (pi * n)
+                let val = 2.0 / (std::f32::consts::PI * n as f32);
+                // Blackman-Harris window for high sideband rejection (>90dB)
+                let a0 = 0.35875;
+                let a1 = 0.48829;
+                let a2 = 0.14128;
+                let a3 = 0.01168;
+                let w = a0 - a1 * (2.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos()
+                           + a2 * (4.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos()
+                           - a3 * (6.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos();
+                taps[i] = val * w;
+            } else {
+                taps[i] = 0.0;
+            }
+        }
+        Self {
+            taps,
+            history: vec![0.0f32; num_taps - 1],
+        }
+    }
+
+    /// Process input and return Hilbert-transformed (90° shifted) output.
+    pub fn process_into(&mut self, input: &[f32], output: &mut Vec<f32>) {
+        output.clear();
+        let taps_len = self.taps.len();
+        let overlap = taps_len - 1;
+        
+        let mut extended = Vec::with_capacity(overlap + input.len());
+        extended.extend_from_slice(&self.history);
+        extended.extend_from_slice(input);
+
+        // Standard FIR convolution
+        for i in 0..input.len() {
+            let mut acc = 0.0f32;
+            let window = &extended[i..i + taps_len];
+            for (s, t) in window.iter().zip(self.taps.iter()) {
+                acc += s * t;
+            }
+            output.push(acc);
+        }
+
+        let new_history_start = extended.len() - overlap;
+        self.history.copy_from_slice(&extended[new_history_start..]);
+    }
+}
+
+/// A Single Sideband (SSB) demodulator using the phasing method.
+pub struct SsbDemodulator {
+    hilbert: HilbertFilter,
+    i_history: Vec<f32>,
+    q_shifted: Vec<f32>,
+    is_usb: bool,
+}
+
+impl SsbDemodulator {
+    pub fn new(is_usb: bool) -> Self {
+        let num_taps = 65; // Good balance for 48kHz audio
+        Self {
+            hilbert: HilbertFilter::new(num_taps),
+            i_history: vec![0.0f32; num_taps / 2], // Group delay buffer
+            q_shifted: Vec::with_capacity(1024),
+            is_usb,
+        }
+    }
+
+    /// Process interleaved I/Q samples and return real audio.
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        let n = input.len() / 2;
+        let mut i_branch = Vec::with_capacity(n);
+        let mut q_branch = Vec::with_capacity(n);
+        
+        for k in 0..n {
+            i_branch.push(input[k * 2]);
+            q_branch.push(input[k * 2 + 1]);
+        }
+
+        // 1. Transform Q branch (90 deg shift)
+        self.hilbert.process_into(&q_branch, &mut self.q_shifted);
+
+        // 2. Combine with delayed I branch
+        let mut output = Vec::with_capacity(n);
+        let delay = self.i_history.len();
+        
+        // Build extended I branch for delay matching
+        let mut i_extended = Vec::with_capacity(delay + n);
+        i_extended.extend_from_slice(&self.i_history);
+        i_extended.extend_from_slice(&i_branch);
+
+        for k in 0..n {
+            let i_val = i_extended[k];
+            let q_hat = self.q_shifted[k];
+            
+            // Phasing formula: USB = I - Q_hat, LSB = I + Q_hat
+            if self.is_usb {
+                output.push(i_val - q_hat);
+            } else {
+                output.push(i_val + q_hat);
+            }
+        }
+
+        // Update I branch history
+        self.i_history.copy_from_slice(&i_extended[n..]);
+        output
+    }
+}
+
+// ============================================================
 
 /// A magnitude-based AM demodulator.
 pub struct AmDemodulator {

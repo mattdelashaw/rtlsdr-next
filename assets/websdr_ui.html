@@ -2,274 +2,500 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>rtlsdr-next WebSDR</title>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rtlsdr-next | Professional WebSDR</title>
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
     <style>
-        body { background: #0a0a0c; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; overflow-x: hidden; }
-        .controls { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; background: #1a1a1c; padding: 15px; border-radius: 8px; border: 1px solid #333; flex-wrap: wrap; }
-        .freq-display { font-family: monospace; font-size: 1.5em; color: #00ff00; background: #000; padding: 5px 10px; border-radius: 4px; border: 1px solid #004400; min-width: 180px; text-align: right; }
-        .input-group { display: flex; flex-direction: column; gap: 5px; }
-        label { font-size: 0.8em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
-        .label-val { color: #aaa; font-weight: bold; margin-left: 5px; }
-        input[type="number"] { background: #222; color: #fff; border: 1px solid #444; padding: 8px; width: 100px; border-radius: 4px; outline: none; }
-        input[type="number"]:focus { border-color: #007bff; }
-        select { background: #222; color: #fff; border: 1px solid #444; padding: 8px; border-radius: 4px; outline: none; }
-        button { background: #333; color: white; border: 1px solid #444; padding: 8px 15px; cursor: pointer; border-radius: 4px; transition: all 0.2s; }
-        button:hover { background: #444; border-color: #666; }
-        button.active { background: #007bff; border-color: #0056b3; }
-        .canvas-container { position: relative; background: #000; border-radius: 4px; border: 1px solid #333; overflow: hidden; }
-        canvas { display: block; width: 100%; image-rendering: pixelated; }
-        .status { margin-top: 10px; font-size: 0.9em; color: #888; display: flex; justify-content: space-between; }
-        .slider { width: 120px; vertical-align: middle; }
+        :root {
+            --bg-deep: #050507;
+            --bg-panel: #0f1115;
+            --border: #1e2229;
+            --neon-blue: #00d2ff;
+            --neon-green: #39ff14;
+            --text-main: #d1d5db;
+            --text-dim: #6b7280;
+            --accent: #3b82f6;
+        }
+
+        body { 
+            background: var(--bg-deep); 
+            color: var(--text-main); 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            margin: 0; 
+            padding: 0; 
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* --- Header & Controls --- */
+        header {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            z-index: 100;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+
+        .brand {
+            font-weight: 800;
+            letter-spacing: -1px;
+            font-size: 1.2rem;
+            color: var(--neon-blue);
+            white-space: nowrap;
+        }
+
+        .brand span { color: var(--text-main); font-weight: 300; margin-left: 4px; }
+
+        .v-divider { width: 1px; height: 32px; background: var(--border); }
+
+        .control-group { display: flex; flex-direction: column; gap: 4px; }
+        .control-label { font-size: 0.65rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+
+        .freq-readout {
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 1.6rem;
+            color: var(--neon-green);
+            background: #000;
+            padding: 2px 12px;
+            border-radius: 6px;
+            border: 1px solid #113311;
+            box-shadow: inset 0 0 10px rgba(0,255,0,0.1);
+            min-width: 180px;
+            text-align: right;
+            cursor: pointer;
+        }
+
+        .btn-group { display: flex; background: #1a1e26; padding: 3px; border-radius: 6px; border: 1px solid var(--border); }
+        .btn-group button {
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            padding: 6px 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        .btn-group button.active { background: var(--accent); color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+
+        .slider-container { display: flex; align-items: center; gap: 10px; }
+        input[type="range"] { -webkit-appearance: none; background: #1a1e26; height: 4px; border-radius: 2px; width: 100px; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; background: var(--accent); border-radius: 50%; cursor: pointer; }
+
+        /* --- Main Layout --- */
+        main { flex: 1; display: flex; flex-direction: column; position: relative; }
+
+        #visuals { flex: 1; position: relative; cursor: crosshair; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+
+        /* --- Overlays --- */
+        .overlay { position: absolute; pointer-events: none; width: 100%; }
+        #freq-ruler { top: 0; height: 24px; background: rgba(0,0,0,0.5); border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 10px; color: var(--text-dim); }
+
+        /* --- S-Meter --- */
+        .smeter-box {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(15, 17, 21, 0.85);
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            backdrop-filter: blur(8px);
+            min-width: 140px;
+        }
+        .smeter-bar-bg { background: #111; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 5px; }
+        .smeter-bar { background: linear-gradient(90deg, #39ff14, #fbbf24, #ef4444); width: 0%; height: 100%; transition: width 0.1s; }
+
+        footer {
+            background: var(--bg-panel);
+            padding: 6px 20px;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            display: flex;
+            justify-content: space-between;
+            border-top: 1px solid var(--border);
+        }
+
+        #audio-toggle {
+            background: #ef4444;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.3);
+        }
+        #audio-toggle.on { background: var(--neon-green); box-shadow: 0 0 15px rgba(57, 255, 20, 0.3); }
+
+        /* Mobile tweaks */
+        @media (max-width: 768px) {
+            header { flex-wrap: wrap; gap: 12px; }
+            .freq-readout { font-size: 1.2rem; min-width: 140px; }
+            .v-divider { display: none; }
+        }
     </style>
 </head>
 <body>
-    <div class="controls">
-        <div class="input-group">
-            <label>Frequency (MHz)</label>
-            <div style="display: flex; gap: 5px; align-items: center;">
-                <input type="number" id="freq-mhz" value="100.000" step="0.001" onchange="updateFreq()">
-                <div class="freq-display" id="freq-display">100.000.000</div>
-            </div>
+    <header>
+        <div class="brand">rtlsdr-next <span>SDR</span></div>
+        <div class="v-divider"></div>
+        
+        <div class="control-group">
+            <span class="control-label">Center Frequency</span>
+            <div class="freq-readout" id="freq-val" onclick="promptFreq()">101.100.000</div>
         </div>
 
-        <div class="input-group">
-            <label>Step</label>
-            <select id="freq-step">
-                <option value="1.0">1 MHz</option>
-                <option value="0.1">100 kHz</option>
-                <option value="0.025">25 kHz</option>
-                <option value="0.0125">12.5 kHz</option>
-                <option value="0.001" selected>1 kHz</option>
-            </select>
-        </div>
-
-        <div class="input-group">
-            <label>RF Gain <span id="gain-val" class="label-val">30.0 dB</span></label>
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <span style="font-size: 0.7em; color: #555;">0.0</span>
-                <input type="range" class="slider" id="gain" min="0" max="49.6" step="0.1" value="30" oninput="setGain()">
-                <span style="font-size: 0.7em; color: #555;">49.6</span>
-            </div>
-        </div>
-
-        <div class="input-group">
-            <label>Mode</label>
-            <div style="display: flex; gap: 5px;">
-                <button id="mode-fm" class="active" onclick="setMode('fm')">FM</button>
+        <div class="control-group">
+            <span class="control-label">Demod Mode</span>
+            <div class="btn-group">
+                <button id="mode-wfm" class="active" onclick="setMode('wfm')">WFM</button>
+                <button id="mode-nfm" onclick="setMode('nfm')">NFM</button>
                 <button id="mode-am" onclick="setMode('am')">AM</button>
+                <button id="mode-usb" onclick="setMode('usb')">USB</button>
+                <button id="mode-lsb" onclick="setMode('lsb')">LSB</button>
             </div>
         </div>
 
-        <div class="input-group">
-            <label>Audio Vol <span id="vol-val" class="label-val">100%</span></label>
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <button id="audio-btn" onclick="toggleAudio()">Start Audio</button>
-                <input type="range" class="slider" id="volume" min="0" max="2" step="0.1" value="1.0" oninput="updateVolume()">
+        <div class="control-group">
+            <span class="control-label">RF Gain <span id="gain-label" style="color:var(--neon-blue); margin-left:4px">30 dB</span></span>
+            <div class="slider-container">
+                <input type="range" id="gain-slider" min="0" max="49" step="1" value="30" oninput="setGain()">
             </div>
         </div>
-    </div>
 
-    <div class="canvas-container">
-        <canvas id="view" width="1024" height="800"></canvas>
-    </div>
+        <div class="control-group">
+            <span class="control-label">Waterfall Controls</span>
+            <div style="display:flex; gap:10px; align-items:center">
+                <span class="control-label" style="font-size:0.55rem">SENS</span>
+                <input type="range" id="wf-sens" min="0" max="20" step="0.5" value="8" oninput="updateVisuals()" style="width:60px">
+                <span class="control-label" style="font-size:0.55rem">OFFS</span>
+                <input type="range" id="wf-offs" min="-50" max="50" step="1" value="5" oninput="updateVisuals()" style="width:60px">
+            </div>
+        </div>
 
-    <div class="status">
-        <div id="status">Connecting...</div>
-        <div id="hw-info">Hardware: Searching...</div>
-    </div>
+        <div class="v-divider"></div>
+
+        <div class="control-group">
+            <span class="control-label">Audio</span>
+            <div style="display:flex; align-items:center; gap:12px">
+                <button id="audio-toggle" onclick="toggleAudio()">START AUDIO</button>
+                <input type="range" id="vol-slider" min="0" max="2" step="0.1" value="1.0" oninput="updateVol()" style="width:60px">
+            </div>
+        </div>
+    </header>
+
+    <main id="container">
+        <div id="visuals">
+            <!-- Waterfall Layer -->
+            <canvas id="waterfall-canvas"></canvas>
+            <!-- Spectrum Layer -->
+            <canvas id="spectrum-canvas"></canvas>
+            <!-- Interaction Layer -->
+            <canvas id="ui-canvas"></canvas>
+            
+            <div id="freq-ruler" class="overlay"></div>
+            
+            <div class="smeter-box">
+                <div class="control-label">Signal Level</div>
+                <div style="display:flex; justify-content:space-between; font-size:10px; margin-top:4px">
+                    <span>-100</span><span>-60</span><span>-20</span>
+                </div>
+                <div class="smeter-bar-bg">
+                    <div class="smeter-bar" id="smeter-bar"></div>
+                </div>
+                <div id="dbfs-label" style="font-family:monospace; text-align:right; font-size:11px; margin-top:4px; color:var(--neon-green)">-100.0 dBFS</div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div id="hw-status">Hardware: Initializing...</div>
+        <div id="stream-info">Span: 1.536 MHz | Rate: 48.0 kHz</div>
+        <div id="ws-status">WebSocket: Connecting...</div>
+    </footer>
 
     <script>
+        // --- State Management ---
+        let state = {
+            connected: false,
+            frequency: 101100000,
+            gain: 30,
+            mode: 'wfm',
+            sampleRate: 48000, // Default, will be updated by handshake
+            span: 1536000,     // Backend PIPELINE_SAMPLE_RATE
+            fftSize: 1024,
+            waterfallSpeed: 1,
+            audioRunning: false,
+            magBuffer: null,
+            wfSens: 8,
+            wfOffs: 5
+        };
+
+        const canvases = {
+            waterfall: document.getElementById('waterfall-canvas'),
+            spectrum: document.getElementById('spectrum-canvas'),
+            ui: document.getElementById('ui-canvas')
+        };
+        const ctxs = {
+            waterfall: canvases.waterfall.getContext('2d', { alpha: false }),
+            spectrum: canvases.spectrum.getContext('2d'),
+            ui: canvases.ui.getContext('2d')
+        };
+
+        // --- Waterfall Colormap (Spectral/Magma Hybrid) ---
+        const colorTable = new Uint8ClampedArray(256 * 4);
+        for (let i = 0; i < 256; i++) {
+            const v = i / 255;
+            // Deep blue to bright yellow/white
+            colorTable[i*4+0] = Math.pow(v, 2.0) * 255; // R
+            colorTable[i*4+1] = Math.pow(v, 0.8) * 255; // G
+            colorTable[i*4+2] = Math.pow(v, 0.5) * 255; // B
+            colorTable[i*4+3] = 255;                    // A
+        }
+
+        // --- Resize Logic ---
+        function resize() {
+            const rect = document.getElementById('visuals').getBoundingClientRect();
+            Object.values(canvases).forEach(c => {
+                c.width = rect.width;
+                c.height = rect.height;
+            });
+            drawRuler();
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- WebSocket ---
         let ws;
-        let reconnectDelay = 1000;
-        const canvas = document.getElementById('view');
-        const ctx = canvas.getContext('2d');
-        const status = document.getElementById('status');
-        const hwInfo = document.getElementById('hw-info');
-        const freqInput = document.getElementById('freq-mhz');
-        const freqDisplay = document.getElementById('freq-display');
-        
-        // Layout Constants
-        const SPECTRUM_HEIGHT = 200;
-        const WATERFALL_HEIGHT = canvas.height - SPECTRUM_HEIGHT;
-        
-        // Waterfall logic
-        const rowData = ctx.createImageData(canvas.width, 1);
-        
-        // Spectrum Smoothing
-        let smoothedMag = new Float32Array(canvas.width).fill(0);
-        const smoothing = 0.7;
-
-        // Audio logic
-        let audioCtx = null;
-        let gainNode = null;
-        let nextStartTime = 0;
-        const SAMPLE_RATE = 51200; 
-
-        // Keyboard tuning
-        window.addEventListener('keydown', (e) => {
-            if (document.activeElement.tagName === 'INPUT') return;
-            const step = parseFloat(document.getElementById('freq-step').value);
-            if (e.key === 'ArrowUp') {
-                freqInput.value = (parseFloat(freqInput.value) + step).toFixed(4);
-                updateFreq();
-            } else if (e.key === 'ArrowDown') {
-                freqInput.value = (parseFloat(freqInput.value) - step).toFixed(4);
-                updateFreq();
-            }
-        });
-        
         function connect() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const port = window.location.port ? `:${window.location.port}` : '';
             ws = new WebSocket(`${protocol}//${location.hostname || 'localhost'}${port}/ws`);
-
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => { 
-                status.innerText = 'Connected to Backend'; 
-                reconnectDelay = 1000;
+                document.getElementById('ws-status').innerText = 'WebSocket: Active';
+                state.connected = true;
             };
 
             ws.onclose = () => {
-                status.innerText = `Disconnected. Reconnecting...`;
-                setTimeout(connect, reconnectDelay);
-                reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+                document.getElementById('ws-status').innerText = 'WebSocket: Disconnected (Retrying...)';
+                state.connected = false;
+                setTimeout(connect, 2000);
             };
 
-            ws.onmessage = (event) => {
-                if (typeof event.data === 'string') {
-                    const msg = JSON.parse(event.data);
-                    if (msg.type === 'hardwareinfo') {
-                        hwInfo.innerText = `${msg.manufacturer} ${msg.product} (V4: ${msg.is_v4})`;
-                    } else if (msg.type === 'freqconfirm') {
-                        const mhz = (msg.actual / 1000000).toFixed(6);
-                        freqInput.value = mhz;
-                        freqDisplay.innerText = msg.actual.toLocaleString().replace(/,/g, '.');
-                    } else if (msg.type === 'gainconfirm') {
-                        document.getElementById('gain').value = msg.actual;
-                        document.getElementById('gain-val').innerText = msg.actual.toFixed(1) + ' dB';
-                    } else if (msg.type === 'demodconfirm') {
-                        document.querySelectorAll('[id^="mode-"]').forEach(b => b.classList.remove('active'));
-                        const btn = document.getElementById(`mode-${msg.actual}`);
-                        if (btn) btn.classList.add('active');
-                    }
-                    return;
-                }
-
-                const buffer = event.data;
-                const view = new DataView(buffer);
-                const type = String.fromCharCode(view.getUint8(0));
-
-                if (type === 'W') {
-                    const magnitudes = new Uint8Array(buffer, 1);
-                    
-                    // 1. Draw Spectrum Line
-                    ctx.fillStyle = '#000';
-                    ctx.fillRect(0, 0, canvas.width, SPECTRUM_HEIGHT);
-                    
-                    ctx.strokeStyle = '#00ff00';
-                    ctx.lineWidth = 1.5;
-                    ctx.beginPath();
-                    
-                    for (let i = 0; i < magnitudes.length; i++) {
-                        const m = magnitudes[i];
-                        smoothedMag[i] = (smoothedMag[i] * smoothing) + (m * (1.0 - smoothing));
-                        const y = SPECTRUM_HEIGHT - (smoothedMag[i] / 255 * (SPECTRUM_HEIGHT - 20)) - 10;
-                        if (i === 0) ctx.moveTo(i, y); else ctx.lineTo(i, y);
-                    }
-                    ctx.stroke();
-
-                    // 2. Shift and Draw Waterfall
-                    // Copy existing waterfall down one pixel
-                    ctx.drawImage(canvas, 
-                        0, SPECTRUM_HEIGHT, canvas.width, WATERFALL_HEIGHT - 1, 
-                        0, SPECTRUM_HEIGHT + 1, canvas.width, WATERFALL_HEIGHT - 1
-                    );
-                    
-                    for (let i = 0; i < magnitudes.length; i++) {
-                        const m = magnitudes[i];
-                        rowData.data[i * 4 + 0] = Math.max(0, Math.min(255, (m - 128) * 2)); 
-                        rowData.data[i * 4 + 1] = Math.max(0, Math.min(255, 255 - Math.abs(m - 128) * 2));
-                        rowData.data[i * 4 + 2] = Math.max(0, Math.min(255, (128 - m) * 2));
-                        rowData.data[i * 4 + 3] = 255;             
-                    }
-                    ctx.putImageData(rowData, 0, SPECTRUM_HEIGHT);
-                    
-                } else if (type === 'A' && audioCtx && audioCtx.state === 'running') {
-                    const samples = new Float32Array(buffer, 4);
-                    const audioBuffer = audioCtx.createBuffer(1, samples.length, SAMPLE_RATE);
-                    audioBuffer.getChannelData(0).set(samples);
-                    const source = audioCtx.createBufferSource();
-                    source.buffer = audioBuffer;
-                    source.connect(gainNode);
-                    
-                    const currentTime = audioCtx.currentTime;
-                    if (nextStartTime < currentTime) {
-                        nextStartTime = currentTime + 0.1; 
-                    }
-                    source.start(nextStartTime);
-                    nextStartTime += audioBuffer.duration;
+            ws.onmessage = (e) => {
+                if (typeof e.data === 'string') {
+                    handleJson(JSON.parse(e.data));
+                } else {
+                    handleBinary(e.data);
                 }
             };
         }
 
-        function updateFreq() {
-            const hz = Math.round(parseFloat(freqInput.value) * 1000000);
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'frequency', hz }));
+        function handleJson(msg) {
+            if (msg.type === 'hardwareinfo') {
+                document.getElementById('hw-status').innerText = `Hardware: ${msg.manufacturer} ${msg.product}`;
+            } else if (msg.type === 'audioconfig') {
+                state.sampleRate = msg.sample_rate;
+                state.fftSize = msg.fft_size;
+                document.getElementById('stream-info').innerText = `Span: 1.536 MHz | Rate: ${msg.sample_rate/1000} kHz`;
+            } else if (msg.type === 'freqconfirm') {
+                state.frequency = msg.requested;
+                document.getElementById('freq-val').innerText = msg.requested.toLocaleString().replace(/,/g, '.');
+                drawRuler();
+            } else if (msg.type === 'gainconfirm') {
+                state.gain = msg.actual;
+                document.getElementById('gain-slider').value = msg.actual;
+                document.getElementById('gain-label').innerText = `${msg.actual.toFixed(0)} dB`;
+            } else if (msg.type === 'demodconfirm') {
+                state.mode = msg.mode;
+                document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
+                document.getElementById(`mode-${msg.mode}`).classList.add('active');
             }
         }
 
-        function setGain() {
-            const db = parseFloat(document.getElementById('gain').value);
-            document.getElementById('gain-val').innerText = db.toFixed(1) + ' dB';
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'gain', db }));
+        let spectrumY = new Float32Array(2048).fill(0);
+        function handleBinary(data) {
+            const view = new DataView(data);
+            const type = String.fromCharCode(view.getUint8(0));
+
+            if (type === 'W') {
+                const mags = new Uint8Array(data, 1);
+                drawFrame(mags);
+            } else if (type === 'A' && state.audioRunning) {
+                playAudio(new Float32Array(data, 4));
             }
         }
 
-        function setMode(mode) {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'demod', mode }));
+        // --- Rendering ---
+        const waterfallRow = ctxs.waterfall.createImageData(1024, 1);
+        const SPECTRUM_RATIO = 0.3; // 30% of height for spectrum
+
+        function drawFrame(mags) {
+            const { waterfall: w, spectrum: s } = ctxs;
+            const width = canvases.waterfall.width;
+            const height = canvases.waterfall.height;
+            const specH = height * SPECTRUM_RATIO;
+            
+            // 1. Shift Waterfall Down
+            w.drawImage(canvases.waterfall, 0, 0, width, height - 1, 0, 1, width, height - 1);
+            
+            // 2. Draw Waterfall Row (Top)
+            const rowImg = w.createImageData(mags.length, 1);
+            for(let i=0; i<mags.length; i++) {
+                const m = mags[i];
+                // Apply sensitivity and offset for dynamic contrast
+                const val = Math.max(0, Math.min(255, (m - 128 + state.wfOffs) * state.wfSens / 8 + 128));
+                
+                rowImg.data[i*4+0] = colorTable[Math.floor(val)*4+0];
+                rowImg.data[i*4+1] = colorTable[Math.floor(val)*4+1];
+                rowImg.data[i*4+2] = colorTable[Math.floor(val)*4+2];
+                rowImg.data[i*4+3] = 255;
+            }
+            // Scale and draw row to match canvas width
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = mags.length;
+            tempCanvas.height = 1;
+            tempCanvas.getContext('2d').putImageData(rowImg, 0, 0);
+            w.drawImage(tempCanvas, 0, 0, mags.length, 1, 0, 0, width, 1);
+
+            // 3. Draw Spectrum
+            s.clearRect(0, 0, width, specH);
+            s.beginPath();
+            s.strokeStyle = '#39ff14';
+            s.lineWidth = 1.5;
+            
+            let maxVal = 0;
+            for(let i=0; i<width; i++) {
+                const magIdx = Math.floor(i * mags.length / width);
+                const m = mags[magIdx];
+                if (m > maxVal) maxVal = m;
+                
+                spectrumY[i] = spectrumY[i] * 0.7 + m * 0.3;
+                const y = specH - (spectrumY[i] / 255 * specH);
+                if (i === 0) s.moveTo(i, y); else s.lineTo(i, y);
+            }
+            s.stroke();
+            
+            // Gradient fill for spectrum
+            s.lineTo(width, specH);
+            s.lineTo(0, specH);
+            const grad = s.createLinearGradient(0, 0, 0, specH);
+            grad.addColorStop(0, 'rgba(57, 255, 20, 0.2)');
+            grad.addColorStop(1, 'rgba(57, 255, 20, 0)');
+            s.fillStyle = grad;
+            s.fill();
+
+            // 4. Update S-Meter
+            const dbfs = (maxVal / 255 * 100) - 100;
+            document.getElementById('smeter-bar').style.width = `${Math.max(0, maxVal / 2.55)}%`;
+            document.getElementById('dbfs-label').innerText = `${dbfs.toFixed(1)} dBFS`;
+        }
+
+        function updateVisuals() {
+            state.wfSens = parseFloat(document.getElementById('wf-sens').value);
+            state.wfOffs = parseFloat(document.getElementById('wf-offs').value);
+        }
+
+        function drawRuler() {
+            const ruler = document.getElementById('freq-ruler');
+            const width = ruler.clientWidth;
+            const center = state.frequency;
+            const start = center - (state.span / 2);
+            const end = center + (state.span / 2);
+            
+            ruler.innerHTML = '';
+            // Major ticks every 200 kHz
+            const tickSpacing = 200000;
+            const firstTick = Math.ceil(start / tickSpacing) * tickSpacing;
+            
+            for(let f = firstTick; f <= end; f += tickSpacing) {
+                const x = ((f - start) / state.span) * width;
+                const label = document.createElement('div');
+                label.style.position = 'absolute';
+                label.style.left = `${x}px`;
+                label.style.borderLeft = '1px solid rgba(255,255,255,0.3)';
+                label.style.height = '10px';
+                label.style.paddingLeft = '4px';
+                label.innerText = (f / 1000000).toFixed(2);
+                ruler.appendChild(label);
             }
         }
 
-        function updateVolume() {
-            const vol = parseFloat(document.getElementById('volume').value);
-            document.getElementById('vol-val').innerText = Math.round(vol * 100) + '%';
-            if (gainNode) {
-                gainNode.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.02);
-            }
-        }
-
+        // --- Audio ---
+        let audioCtx, gainNode, nextTime = 0;
         function toggleAudio() {
             if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-                    sampleRate: SAMPLE_RATE
-                });
+                audioCtx = new AudioContext({ sampleRate: state.sampleRate });
                 gainNode = audioCtx.createGain();
                 gainNode.connect(audioCtx.destination);
-                updateVolume();
-                
-                nextStartTime = 0; // RESET start time on toggle
-                
-                if (audioCtx.state === 'suspended') {
-                    audioCtx.resume();
-                }
-                
-                document.getElementById('audio-btn').innerText = 'Audio ON';
-                document.getElementById('audio-btn').classList.add('active');
+                updateVol();
+                nextTime = 0; // RESET timing for the new context
+                state.audioRunning = true;
+                document.getElementById('audio-toggle').innerText = 'STOP AUDIO';
+                document.getElementById('audio-toggle').classList.add('on');
             } else {
                 audioCtx.close().then(() => {
                     audioCtx = null;
-                    gainNode = null;
-                    nextStartTime = 0;
-                    document.getElementById('audio-btn').innerText = 'Start Audio';
-                    document.getElementById('audio-btn').classList.remove('active');
+                    state.audioRunning = false;
+                    document.getElementById('audio-toggle').innerText = 'START AUDIO';
+                    document.getElementById('audio-toggle').classList.remove('on');
                 });
             }
         }
+
+        function playAudio(samples) {
+            if (!audioCtx) return;
+            const buf = audioCtx.createBuffer(1, samples.length, state.sampleRate);
+            buf.getChannelData(0).set(samples);
+            const source = audioCtx.createBufferSource();
+            source.buffer = buf;
+            source.connect(gainNode);
+            
+            const now = audioCtx.currentTime;
+            if (nextTime < now) nextTime = now + 0.05;
+            source.start(nextTime);
+            nextTime += buf.duration;
+        }
+
+        // --- Commands ---
+        function setFrequency(hz) {
+            if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'frequency', hz }));
+        }
+        function setGain() {
+            const db = parseFloat(document.getElementById('gain-slider').value);
+            if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'gain', db }));
+        }
+        function setMode(mode) {
+            if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'demod', mode }));
+        }
+        function updateVol() {
+            const v = document.getElementById('vol-slider').value;
+            if (gainNode) gainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.02);
+        }
+        function promptFreq() {
+            const f = prompt("Enter Frequency (MHz):", (state.frequency / 1000000).toFixed(3));
+            if (f) setFrequency(Math.round(parseFloat(f) * 1000000));
+        }
+
+        // --- Interactions ---
+        canvases.ui.addEventListener('mousedown', (e) => {
+            const rect = canvases.ui.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const pct = x / rect.width;
+            const start = state.frequency - (state.span / 2);
+            const targetHz = Math.round(start + (pct * state.span));
+            setFrequency(targetHz);
+        });
 
         connect();
     </script>
