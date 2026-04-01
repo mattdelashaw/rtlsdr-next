@@ -352,9 +352,9 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut pre_q_wfm = Decimator::new(8, 0.45 / 8.0, 31);
     let mut post_wfm = Decimator::new(4, 0.45 / 4.0, 65);
 
-    let mut pre_i_nfm = Decimator::new(16, 0.45 / 16.0, 31);
-    let mut pre_q_nfm = Decimator::new(16, 0.45 / 16.0, 31);
-    let mut post_nfm = Decimator::new(2, 0.45 / 2.0, 65);
+    let _pre_i_nfm = Decimator::new(16, 0.45 / 16.0, 31);
+    let _pre_q_nfm = Decimator::new(16, 0.45 / 16.0, 31);
+    let _post_nfm = Decimator::new(2, 0.45 / 2.0, 65);
 
     let mut pre_i_am = Decimator::new(32, 6000.0 / PIPELINE_SAMPLE_RATE as f32, 63);
     let mut pre_q_am = Decimator::new(32, 6000.0 / PIPELINE_SAMPLE_RATE as f32, 63);

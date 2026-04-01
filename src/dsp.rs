@@ -447,7 +447,7 @@ impl HilbertFilter {
         let mut taps = vec![0.0f32; num_taps];
         let mid = num_taps / 2;
 
-        for i in 0..num_taps {
+        for (i, tap) in taps.iter_mut().enumerate() {
             let n = i as i32 - mid as i32;
             if n % 2 != 0 {
                 // Ideal Hilbert kernel: 2 / (pi * n)
@@ -461,11 +461,12 @@ impl HilbertFilter {
                     - a1 * (2.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos()
                     + a2 * (4.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos()
                     - a3 * (6.0 * std::f32::consts::PI * i as f32 / (num_taps - 1) as f32).cos();
-                taps[i] = val * w;
+                *tap = val * w;
             } else {
-                taps[i] = 0.0;
+                *tap = 0.0;
             }
         }
+
         Self {
             taps,
             history: vec![0.0f32; num_taps - 1],
@@ -539,8 +540,7 @@ impl SsbDemodulator {
         i_extended.extend_from_slice(&self.i_history);
         i_extended.extend_from_slice(&i_branch);
 
-        for k in 0..n {
-            let i_val = i_extended[k];
+        for (k, &i_val) in i_extended.iter().enumerate().take(n) {
             let q_hat = self.q_shifted[k];
 
             // Phasing formula: USB = I - Q_hat, LSB = I + Q_hat
@@ -550,7 +550,6 @@ impl SsbDemodulator {
                 output.push(i_val + q_hat);
             }
         }
-
         // Update I branch history
         self.i_history.copy_from_slice(&i_extended[n..]);
         output
