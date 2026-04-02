@@ -44,7 +44,12 @@ use tuner::TunerType;
 
 impl Driver {
     pub fn new() -> Result<Self> {
-        let device = Arc::new(Device::open()?);
+        let index = std::env::var("RTLSDR_DEVICE_INDEX")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+
+        let device = Arc::new(Device::open(index)?);
         let hw = device.as_ref();
 
         // ── 1. RTL2832U baseband init ──────────────────────────────────────
@@ -242,7 +247,7 @@ impl Driver {
         // Notify streams to flush old buffers
         let _ = self.flush_tx.send(());
 
-        Ok(actual)
+        Ok(hz)
     }
 
     fn apply_input_path(&self, _freq_hz: u64, path: InputPath) -> Result<()> {

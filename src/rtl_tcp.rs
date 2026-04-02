@@ -61,27 +61,42 @@ async fn run_server(
     let stream_token = cancel_token.clone();
 
     tokio::spawn(async move {
-        let mut stream = {
-            let d = stream_driver.lock().await;
-            d.stream()
-        };
-
         loop {
-            tokio::select! {
-                _ = stream_token.cancelled() => break,
-                res = stream.next() => {
-                    match res {
-                        Some(Ok(samples)) => {
-                            let _ = stream_tx.send(Arc::new(samples.to_vec()));
+            if stream_token.is_cancelled() {
+                break;
+            }
+
+            let mut stream = {
+                let d = stream_driver.lock().await;
+                d.stream()
+            };
+
+            loop {
+                tokio::select! {
+                    _ = stream_token.cancelled() => break,
+                    res = stream.next() => {
+                        match res {
+                            Some(Ok(samples)) => {
+                                let _ = stream_tx.send(Arc::new(samples.to_vec()));
+                            }
+                            Some(Err(e)) => {
+                                warn!("Stream error: {:?}. Attempting to restart...", e);
+                                break;
+                            }
+                            None => {
+                                warn!("Stream ended unexpectedly. Attempting to restart...");
+                                break;
+                            }
                         }
-                        Some(Err(e)) => {
-                            warn!("Stream error: {:?}", e);
-                            break;
-                        }
-                        None => break,
                     }
                 }
             }
+
+            if stream_token.is_cancelled() {
+                break;
+            }
+            // Wait before retrying to avoid spamming on persistent failure
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
         info!("rtl_tcp stream task stopped");
     });

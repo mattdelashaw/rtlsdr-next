@@ -311,8 +311,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                         .await;
                 }
                 Command::Bandwidth { hz } => {
-                    let _ = state_clone.bandwidth_tx.send(hz);
-                    let reply = serde_json::json!({"type":"bandwidthconfirm","actual":hz});
+                    let clamped_hz = hz.clamp(500, 380_000);
+                    let _ = state_clone.bandwidth_tx.send(clamped_hz);
+                    let reply = serde_json::json!({"type":"bandwidthconfirm","actual":clamped_hz});
                     let _ = cmd_reply_tx
                         .send(Message::Text(reply.to_string().into()))
                         .await;
@@ -357,21 +358,27 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let mut ssb_lsb = crate::dsp::SsbDemodulator::new(false);
 
     // ── Audio AGC ──────────────────────────────────────────────────────────
-    // target=-15dBFS (0.17), attack=0.1, decay=0.001, hang=500ms
-    let mut audio_agc = crate::dsp::AudioAgc::new(0.17, 0.1, 0.001, 500.0, AUDIO_SAMPLE_RATE as f32);
+    // target=-15dBFS (0.17), attack=0.1, decay=0.001, hang=500ms, min_magnitude=0.01 (-40dBFS)
+    let mut audio_agc = crate::dsp::AudioAgc::new(
+        0.17,
+        0.1,
+        0.001,
+        500.0,
+        AUDIO_SAMPLE_RATE as f32,
+        0.01,
+    );
 
     // ── Decimation chains ────────────────────────────────────────────────────
     // WFM:  ÷8 → 192kHz → discriminate → ÷4 → 48kHz
-    // NFM:  ÷16 → 96kHz → discriminate → ÷2 → 48kHz
+    // NFM:  ÷32 → 48kHz (direct)
     // AM:   ÷16 → 96kHz → envelope → ÷2 → 48kHz
     // SSB:  ÷32 → 48kHz → phased discriminate
     let mut pre_i_wfm = Decimator::new(8, 0.45 / 8.0, 31);
     let mut pre_q_wfm = Decimator::new(8, 0.45 / 8.0, 31);
     let mut post_wfm = Decimator::new(4, 0.45 / 4.0, 65);
 
-    let _pre_i_nfm = Decimator::new(16, 0.45 / 16.0, 31);
-    let _pre_q_nfm = Decimator::new(16, 0.45 / 16.0, 31);
-    let _post_nfm = Decimator::new(2, 0.45 / 2.0, 65);
+    let mut pre_i_nfm = Decimator::new(32, 0.45 / 32.0, 31);
+    let mut pre_q_nfm = Decimator::new(32, 0.45 / 32.0, 31);
 
     let mut pre_i_am = Decimator::new(32, 6000.0 / PIPELINE_SAMPLE_RATE as f32, 63);
     let mut pre_q_am = Decimator::new(32, 6000.0 / PIPELINE_SAMPLE_RATE as f32, 63);
@@ -405,6 +412,12 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
     let ema_alpha = 0.05f32;
 
     while let Some(res) = stream.next().await {
+        // --- Idle Path Check ---
+        if state.audio_tx.receiver_count() == 0 && state.waterfall_tx.receiver_count() == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            continue;
+        }
+
         while let Ok(mode) = demod_rx.try_recv() {
             current_mode = mode;
         }
@@ -412,12 +425,15 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
             // Update filter cutoffs based on requested audio bandwidth.
             // bw is one-sided audio Hz, we need two-sided IQ Hz for the decimator.
             let iq_bw = bw as f32 * 2.0;
-            let normalized = iq_bw / PIPELINE_SAMPLE_RATE as f32;
+            let normalized = (iq_bw / PIPELINE_SAMPLE_RATE as f32).clamp(0.001, 0.499);
             pre_i_ssb.update_cutoff(normalized);
             pre_q_ssb.update_cutoff(normalized);
             pre_i_am.update_cutoff(normalized);
             pre_q_am.update_cutoff(normalized);
-            info!("WebSDR Filter Bandwidth set to {} Hz (IQ: {} Hz)", bw, iq_bw);
+            info!(
+                "WebSDR Filter Bandwidth set to {} Hz (Normalized: {:.4})",
+                bw, normalized
+            );
         }
         if current_mode == DemodMode::Off {
             continue;
@@ -502,11 +518,8 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
                 audio_out.clone()
             }
             DemodMode::Nfm => {
-                // Fixed: 1.536M / 32 = 48k (No post filter needed)
-                let mut pre_i_nfm_32 = Decimator::new(32, 0.45 / 32.0, 31);
-                let mut pre_q_nfm_32 = Decimator::new(32, 0.45 / 32.0, 31);
-                pre_i_nfm_32.process_into(&i_buf, &mut i_dec);
-                pre_q_nfm_32.process_into(&q_buf, &mut q_dec);
+                pre_i_nfm.process_into(&i_buf, &mut i_dec);
+                pre_q_nfm.process_into(&q_buf, &mut q_dec);
                 let len = i_dec.len().min(q_dec.len());
                 iq_interleaved.resize(len * 2, 0.0);
                 for k in 0..len {
@@ -553,8 +566,8 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
 
         // Apply DC removal to AUDIO output only (clears hiss, centers waveform)
         if !audio.is_empty() {
-            // Treat the mono signal as interleaved data with 0-step for DC removal
-            dc_audio.process(&mut audio);
+            // Apply Mono DC removal
+            dc_audio.process_mono(&mut audio);
             // Apply Audio AGC (Post-demod)
             audio_agc.process(&mut audio);
             let _ = state.audio_tx.send(Arc::new(audio));

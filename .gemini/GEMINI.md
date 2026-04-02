@@ -50,11 +50,16 @@
 - **Safety:** Leverage `rusb` for safe USB handling but maintain "C-like" precision for hardware registers.
 - **Async:** Everything should be compatible with the `Tokio` runtime.
 
-## 📝 Recent Architectural Updates (March 2026)
+## 📝 Recent Architectural Updates (April 2026)
 
-- **I2C Performance:** Reduced R82xx tuning latency from ~270ms to ~45ms by bracketing entire PLL/MUX sequences within a single I2C repeater toggle (`with_repeater`).
-- **SDR++ Compatibility:** 
-  - Implemented `rtl_tcp` command `0x13` (gain-by-index) to support the SDR++ gain slider.
-  - Silently ignore command `0x0d` (gain confirmation) to avoid protocol errors.
-  - Refined `rtl_tcp` command `0x03` (gain mode) to only apply a default 30dB gain when entering Auto mode or when Manual mode is requested while current gain is 0.
-- **Observability:** Added high-resolution timing logs to `set_frequency` and `set_sample_rate` for real-time performance tracking.
+- **Audio Pipeline Enhancements:**
+  - **Variable Filter Bandwidth:** Implemented `update_cutoff` in `Decimator` to allow real-time filter adjustment (1.8kHz - 6.0kHz) without clearing history.
+  - **Audio AGC with Hang Time:** Added `AudioAgc` struct specifically for post-demodulation SSB/AM audio. Features a configurable "hang" period to prevent noise pumping during speech pauses.
+  - **NFM Continuity:** Fixed a critical state-erasure bug where NFM decimators were recreated every frame; state now correctly persists across USB transfers.
+  - **Mono DC Removal:** Added `process_mono` to `DcRemover` to correctly handle single-channel audio without stride errors.
+- **Production & Resiliency:**
+  - **Multi-Device Support:** Implemented `RTLSDR_DEVICE_INDEX` environment variable to allow selecting specific dongles in multi-device setups.
+  - **WebSDR Idle Optimization:** Added an idle-path check in the WebSDR pipeline; DSP processing now throttles to ~0% CPU when no clients are connected.
+  - **rtl_tcp Resiliency:** Wrapped the hardware stream in a restart loop to ensure the server remains operational after USB pipe errors or unexpected disconnects.
+  - **Protocol Robustness:** Added range clamping to the WebSDR bandwidth command to prevent DSP panics on invalid client input.
+- **SSB Phasing Fix:** Corrected time-alignment in `SsbDemodulator` by removing incorrect group-delay history; I and Q branches are now perfectly aligned.

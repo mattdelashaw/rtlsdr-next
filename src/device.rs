@@ -277,9 +277,11 @@ impl<T: UsbContext> HardwareInterface for Device<T> {
 }
 
 impl Device<Context> {
-    pub fn open() -> Result<Self> {
+    pub fn open(index: u32) -> Result<Self> {
         let context = Context::new()?;
         let devices = context.devices()?;
+        let mut matched_count = 0;
+
         for dev in devices.iter() {
             let desc = dev.device_descriptor()?;
             if desc.vendor_id() != 0x0bda
@@ -287,16 +289,20 @@ impl Device<Context> {
             {
                 continue;
             }
-            let handle = dev.open()?;
-            #[cfg(target_os = "linux")]
-            {
-                let _ = handle.set_auto_detach_kernel_driver(true);
+
+            if matched_count == index {
+                let handle = dev.open()?;
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = handle.set_auto_detach_kernel_driver(true);
+                }
+                handle.claim_interface(0)?;
+                return Ok(Self {
+                    handle,
+                    _context: context,
+                });
             }
-            handle.claim_interface(0)?;
-            return Ok(Self {
-                handle,
-                _context: context,
-            });
+            matched_count += 1;
         }
         Err(Error::NotFound)
     }

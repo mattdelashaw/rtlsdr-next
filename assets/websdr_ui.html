@@ -165,6 +165,13 @@
         </div>
 
         <div class="control-group">
+            <span class="control-label">Filter BW <span id="bw-label" style="color:var(--neon-blue); margin-left:4px">3.2 kHz</span></span>
+            <div class="slider-container">
+                <input type="range" id="bw-slider" min="1800" max="6000" step="100" value="3200" oninput="setBandwidth()">
+            </div>
+        </div>
+
+        <div class="control-group">
             <span class="control-label">RF Gain <span id="gain-label" style="color:var(--neon-blue); margin-left:4px">30 dB</span></span>
             <div class="slider-container">
                 <input type="range" id="gain-slider" min="0" max="49" step="1" value="30" oninput="setGain()">
@@ -320,6 +327,9 @@
                 state.mode = msg.mode;
                 document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
                 document.getElementById(`mode-${msg.mode}`).classList.add('active');
+            } else if (msg.type === 'bandwidthconfirm') {
+                document.getElementById('bw-slider').value = msg.actual;
+                document.getElementById('bw-label').innerText = `${(msg.actual / 1000).toFixed(1)} kHz`;
             }
         }
 
@@ -498,17 +508,6 @@
             const pct = x / rect.width;
             const start = state.frequency - (state.span / 2);
             const targetHz = Math.round(start + (pct * state.span));
-            setFrequency(targetHz);
-        });
-
-        connect();
-    </script>
-</body>
-</html>
-pt>
-</body>
-</html>
- = Math.round(start + (pct * state.span));
             setFrequency(targetHz);
         });
 

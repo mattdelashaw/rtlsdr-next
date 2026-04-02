@@ -304,6 +304,14 @@ impl DcRemover {
         }
     }
 
+    /// Process a block of mono samples.
+    pub fn process_mono(&mut self, data: &mut [f32]) {
+        for val in data.iter_mut() {
+            self.avg_i = (1.0 - self.alpha) * self.avg_i + self.alpha * *val;
+            *val -= self.avg_i;
+        }
+    }
+
     /// Process separate I and Q arrays (avoids interleave/deinterleave overhead).
     pub fn process_split(&mut self, i_buf: &mut [f32], q_buf: &mut [f32]) {
         let n = i_buf.len().min(q_buf.len());
@@ -367,26 +375,37 @@ impl Agc {
     }
 }
 
-/// A post-demodulation Audio AGC with "Hang Time".
+/// A post-demodulation Audio AGC with "Hang Time" and Noise Floor Suppression.
 ///
 /// Designed for SSB and AM where signal-burstiness causes standard AGC to "pump".
 /// Holds gain steady for `hang_time_samples` before starting to decay.
+/// If signal magnitude is below `min_magnitude`, gain remains frozen to avoid
+/// amplifying the noise floor.
 pub struct AudioAgc {
     gain: f32,
     target: f32,
     attack: f32,
     decay: f32,
+    min_magnitude: f32,
     hang_time_samples: usize,
     hang_counter: usize,
 }
 
 impl AudioAgc {
-    pub fn new(target: f32, attack: f32, decay: f32, hang_time_ms: f32, sample_rate: f32) -> Self {
+    pub fn new(
+        target: f32,
+        attack: f32,
+        decay: f32,
+        hang_time_ms: f32,
+        sample_rate: f32,
+        min_magnitude: f32,
+    ) -> Self {
         Self {
             gain: 1.0,
             target,
             attack,
             decay,
+            min_magnitude,
             hang_time_samples: (hang_time_ms * sample_rate / 1000.0) as usize,
             hang_counter: 0,
         }
@@ -395,6 +414,14 @@ impl AudioAgc {
     pub fn process(&mut self, data: &mut [f32]) {
         for val in data.iter_mut() {
             let mag = val.abs();
+
+            if mag < self.min_magnitude {
+                // Signal is likely dead air / noise floor. Freeze gain to avoid pumping.
+                *val *= self.gain;
+                *val = val.clamp(-1.0, 1.0);
+                continue;
+            }
+
             let error = self.target / (mag + 1e-6);
 
             if error < self.gain {
@@ -556,7 +583,6 @@ impl HilbertFilter {
 /// A Single Sideband (SSB) demodulator using the phasing method.
 pub struct SsbDemodulator {
     hilbert: HilbertFilter,
-    i_history: Vec<f32>,
     q_shifted: Vec<f32>,
     is_usb: bool,
 }
@@ -566,7 +592,6 @@ impl SsbDemodulator {
         let num_taps = 65; // Good balance for 48kHz audio
         Self {
             hilbert: HilbertFilter::new(num_taps),
-            i_history: vec![0.0f32; num_taps / 2], // Group delay buffer
             q_shifted: Vec::with_capacity(1024),
             is_usb,
         }
@@ -586,16 +611,12 @@ impl SsbDemodulator {
         // 1. Transform Q branch (90 deg shift)
         self.hilbert.process_into(&q_branch, &mut self.q_shifted);
 
-        // 2. Combine with delayed I branch
+        // 2. Combine with I branch
+        // Hilbert filter's q_shifted[k] is the 90-degree shift of input[k].
+        // They are already time-aligned at the same index k.
         let mut output = Vec::with_capacity(n);
-        let delay = self.i_history.len();
-
-        // Build extended I branch for delay matching
-        let mut i_extended = Vec::with_capacity(delay + n);
-        i_extended.extend_from_slice(&self.i_history);
-        i_extended.extend_from_slice(&i_branch);
-
-        for (k, &i_val) in i_extended.iter().enumerate().take(n) {
+        for k in 0..n {
+            let i_val = i_branch[k];
             let q_hat = self.q_shifted[k];
 
             // Phasing formula: USB = I - Q_hat, LSB = I + Q_hat
@@ -605,8 +626,6 @@ impl SsbDemodulator {
                 output.push(i_val + q_hat);
             }
         }
-        // Update I branch history
-        self.i_history.copy_from_slice(&i_extended[n..]);
         output
     }
 }
@@ -688,6 +707,15 @@ mod tests {
         // After settling, it should be near zero
         assert!(data[0].abs() < 0.1);
         assert!(data[1].abs() < 0.1);
+    }
+
+    #[test]
+    fn test_dc_remover_mono() {
+        let mut dc = DcRemover::new(0.01);
+        let mut data = vec![1.5f32; 1000];
+        dc.process_mono(&mut data);
+        // Last sample should be near zero
+        assert!(data[999].abs() < 0.1);
     }
 
     #[test]
@@ -923,26 +951,24 @@ mod tests {
 
     #[test]
     fn test_audio_agc_hang_time() {
-        let mut agc = AudioAgc::new(1.0, 1.0, 0.01, 10.0, 1000.0); // 10 samples hang
+        let mut agc = AudioAgc::new(1.0, 1.0, 0.01, 10.0, 1000.0, 0.01); // 10 samples hang
         
         // 1. Signal at target
         let mut data = vec![1.0f32; 1];
         agc.process(&mut data);
         assert!((data[0] - 1.0).abs() < 0.1);
         
-        // 2. Signal drops to zero
+        // 2. Signal drops to zero (below min_magnitude 0.01)
         let mut silence = vec![0.0f32; 5];
         agc.process(&mut silence);
-        // Gain should hang (stay near 1.0)
+        // Gain should stay near 1.0 (frozen)
         assert!((agc.gain - 1.0).abs() < 1e-5);
-        assert_eq!(agc.hang_counter, 5); // 10 - 5 = 5 remaining
         
-        // 3. More silence
-        let mut more_silence = vec![0.0f32; 10];
-        agc.process(&mut more_silence);
-        // After 5 more samples, gain starts to increase (error = target/eps is huge)
+        // 3. Signal just above noise floor
+        let mut noise = vec![0.02f32; 10];
+        agc.process(&mut noise);
+        // Decay should finally start after hang time
         assert!(agc.gain > 1.0);
-        assert_eq!(agc.hang_counter, 0);
     }
 
     #[test]
