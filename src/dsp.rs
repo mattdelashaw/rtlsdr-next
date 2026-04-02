@@ -613,12 +613,9 @@ impl SsbDemodulator {
 
         // 2. Combine with I branch
         // Hilbert filter's q_shifted[k] is the 90-degree shift of input[k].
-        // They are already time-aligned at the same index k.
+        // They are already time-aligned at the same index.
         let mut output = Vec::with_capacity(n);
-        for k in 0..n {
-            let i_val = i_branch[k];
-            let q_hat = self.q_shifted[k];
-
+        for (&i_val, &q_hat) in i_branch.iter().zip(self.q_shifted.iter()) {
             // Phasing formula: USB = I - Q_hat, LSB = I + Q_hat
             if self.is_usb {
                 output.push(i_val - q_hat);
