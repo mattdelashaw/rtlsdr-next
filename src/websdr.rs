@@ -359,14 +359,8 @@ async fn run_pipeline(state: Arc<WebSdrServer>) -> anyhow::Result<()> {
 
     // ── Audio AGC ──────────────────────────────────────────────────────────
     // target=-15dBFS (0.17), attack=0.1, decay=0.001, hang=500ms, min_magnitude=0.01 (-40dBFS)
-    let mut audio_agc = crate::dsp::AudioAgc::new(
-        0.17,
-        0.1,
-        0.001,
-        500.0,
-        AUDIO_SAMPLE_RATE as f32,
-        0.01,
-    );
+    let mut audio_agc =
+        crate::dsp::AudioAgc::new(0.17, 0.1, 0.001, 500.0, AUDIO_SAMPLE_RATE as f32, 0.01);
 
     // ── Decimation chains ────────────────────────────────────────────────────
     // WFM:  ÷8 → 192kHz → discriminate → ÷4 → 48kHz

@@ -952,18 +952,18 @@ mod tests {
     #[test]
     fn test_audio_agc_hang_time() {
         let mut agc = AudioAgc::new(1.0, 1.0, 0.01, 10.0, 1000.0, 0.01); // 10 samples hang
-        
+
         // 1. Signal at target
         let mut data = vec![1.0f32; 1];
         agc.process(&mut data);
         assert!((data[0] - 1.0).abs() < 0.1);
-        
+
         // 2. Signal drops to zero (below min_magnitude 0.01)
         let mut silence = vec![0.0f32; 5];
         agc.process(&mut silence);
         // Gain should stay near 1.0 (frozen)
         assert!((agc.gain - 1.0).abs() < 1e-5);
-        
+
         // 3. Signal just above noise floor
         let mut noise = vec![0.02f32; 10];
         agc.process(&mut noise);
