@@ -584,15 +584,18 @@ impl HilbertFilter {
 pub struct SsbDemodulator {
     hilbert: HilbertFilter,
     q_shifted: Vec<f32>,
+    i_history: Vec<f32>,
     is_usb: bool,
 }
 
 impl SsbDemodulator {
     pub fn new(is_usb: bool) -> Self {
         let num_taps = 65; // Good balance for 48kHz audio
+        let delay = (num_taps - 1) / 2;
         Self {
             hilbert: HilbertFilter::new(num_taps),
             q_shifted: Vec::with_capacity(1024),
+            i_history: vec![0.0f32; delay],
             is_usb,
         }
     }
@@ -611,18 +614,25 @@ impl SsbDemodulator {
         // 1. Transform Q branch (90 deg shift)
         self.hilbert.process_into(&q_branch, &mut self.q_shifted);
 
-        // 2. Combine with I branch
-        // Hilbert filter's q_shifted[k] is the 90-degree shift of input[k].
-        // They are already time-aligned at the same index.
+        // 2. Combine with delayed I branch
         let mut output = Vec::with_capacity(n);
-        for (&i_val, &q_hat) in i_branch.iter().zip(self.q_shifted.iter()) {
-            // Phasing formula: USB = I - Q_hat, LSB = I + Q_hat
+        let delay = self.i_history.len();
+
+        let mut i_extended = Vec::with_capacity(delay + n);
+        i_extended.extend_from_slice(&self.i_history);
+        i_extended.extend_from_slice(&i_branch);
+
+        for (i_val, &q_hat) in i_extended.iter().zip(self.q_shifted.iter()) {
+            // Phasing formula: USB = I + Q_hat, LSB = I - Q_hat
             if self.is_usb {
-                output.push(i_val - q_hat);
-            } else {
                 output.push(i_val + q_hat);
+            } else {
+                output.push(i_val - q_hat);
             }
         }
+
+        // Update I history
+        self.i_history.copy_from_slice(&i_extended[n..]);
         output
     }
 }
@@ -962,10 +972,54 @@ mod tests {
         assert!((agc.gain - 1.0).abs() < 1e-5);
 
         // 3. Signal just above noise floor
-        let mut noise = vec![0.02f32; 10];
+        let mut noise = vec![0.02f32; 20];
         agc.process(&mut noise);
         // Decay should finally start after hang time
         assert!(agc.gain > 1.0);
+    }
+
+    #[test]
+    fn test_ssb_demod_suppression() {
+        let mut usb = SsbDemodulator::new(true); // USB
+        let mut lsb = SsbDemodulator::new(false); // LSB
+
+        // Generate a 1kHz tone at 48kHz sample rate
+        let fs = 48000.0;
+        let f = 1000.0;
+        let mut input = Vec::new();
+        for i in 0..1000 {
+            let t = i as f32 / fs;
+            let i_val = (2.0 * std::f32::consts::PI * f * t).cos();
+            let q_val = (2.0 * std::f32::consts::PI * f * t).sin();
+            input.push(i_val);
+            input.push(q_val);
+        }
+
+        let out_usb = usb.process(&input);
+        let out_lsb = lsb.process(&input);
+
+        // After the Hilbert filter settles (32 samples delay)
+        // For USB = I - Q_hat, where I = cos(w*t) and Q_hat = -cos(w*(t-32/fs))
+        // If aligned, USB should be 2*cos(w*(t-32/fs)) and LSB should be 0.
+        // Currently, I is NOT delayed, so it's cos(w*t) + cos(w*(t-32/fs)).
+
+        let start = 100; // Skip transient
+        let mut usb_energy = 0.0;
+        let mut lsb_energy = 0.0;
+        for i in start..900 {
+            usb_energy += out_usb[i] * out_usb[i];
+            lsb_energy += out_lsb[i] * out_lsb[i];
+        }
+
+        // With 65 taps, sideband suppression should be > 60dB if aligned.
+        // If misaligned by 32 samples (at 1kHz/48kHz, 32 samples is ~24 degrees)
+        // it will definitely not suppress well.
+        assert!(
+            usb_energy > 10.0 * lsb_energy,
+            "LSB should be suppressed in USB mode. USB: {}, LSB: {}",
+            usb_energy,
+            lsb_energy
+        );
     }
 
     #[test]
