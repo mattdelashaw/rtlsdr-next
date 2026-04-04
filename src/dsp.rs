@@ -416,7 +416,14 @@ impl AudioAgc {
             let mag = val.abs();
 
             if mag < self.min_magnitude {
-                // Signal is likely dead air / noise floor. Freeze gain to avoid pumping.
+                // Signal is likely dead air / noise floor. 
+                // Slowly decay gain back to 1.0 to avoid "preserving" high gain from previous signals.
+                let decay_step = 0.0001; // Very slow decay
+                if self.gain > 1.0 {
+                    self.gain = (self.gain - decay_step).max(1.0);
+                } else if self.gain < 1.0 {
+                    self.gain = (self.gain + decay_step).min(1.0);
+                }
                 *val *= self.gain;
                 *val = val.clamp(-1.0, 1.0);
                 continue;
