@@ -389,6 +389,7 @@ pub struct AudioAgc {
     min_magnitude: f32,
     hang_time_samples: usize,
     hang_counter: usize,
+    envelope: f32, // Track the signal volume over time
 }
 
 impl AudioAgc {
@@ -408,6 +409,7 @@ impl AudioAgc {
             min_magnitude,
             hang_time_samples: (hang_time_ms * sample_rate / 1000.0) as usize,
             hang_counter: 0,
+            envelope: 0.0,
         }
     }
 
@@ -415,24 +417,28 @@ impl AudioAgc {
         for val in data.iter_mut() {
             let mag = val.abs();
 
-            if mag < self.min_magnitude {
-                // Signal is likely dead air / noise floor. 
-                // Slowly decay gain back to 1.0 to avoid "preserving" high gain from previous signals.
-                let decay_step = 0.0001; // Very slow decay
-                if self.gain > 1.0 {
-                    self.gain = (self.gain - decay_step).max(1.0);
-                } else if self.gain < 1.0 {
-                    self.gain = (self.gain + decay_step).min(1.0);
+            // Fast-attack, slow-release envelope tracker to avoid zero-crossing shredding.
+            if mag > self.envelope {
+                self.envelope = mag; // Fast attack
+            } else {
+                self.envelope = 0.999 * self.envelope + 0.001 * mag; // Slow release
+            }
+
+            if self.envelope < self.min_magnitude {
+                // Signal is dead air. Decay gain slowly toward a low floor (0.1)
+                if self.hang_counter > 0 {
+                    self.hang_counter -= 1;
+                } else if self.gain > 0.1 {
+                    self.gain -= 0.0001;
                 }
                 *val *= self.gain;
-                *val = val.clamp(-1.0, 1.0);
                 continue;
             }
 
-            let error = self.target / (mag + 1e-6);
+            let error = self.target / (self.envelope + 1e-6);
 
             if error < self.gain {
-                // Attack: signal got louder, reduce gain immediately
+                // Attack: signal got louder
                 self.gain = (1.0 - self.attack) * self.gain + self.attack * error;
                 self.hang_counter = self.hang_time_samples;
             } else {
@@ -445,7 +451,6 @@ impl AudioAgc {
             }
 
             *val *= self.gain;
-            // Clamp to avoid digital clipping
             *val = val.clamp(-1.0, 1.0);
         }
     }
