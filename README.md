@@ -312,7 +312,8 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 - [x] **Phase 9: Elonics E4000** — Full Zero-IF driver with manual gain control (theoretically)
 - [x] **Phase 10: Fitipower Tuners** — FC0012/FC0013 register maps
 - [x] **Phase 11: Cross-Platform** — Windows confirmed working via Zadig/WinUSB; x86_64 LLVM auto-vectorization benchmarked, no manual SIMD needed
-- [ ] **Phase 12: Configurables** — Runtime buffer sizes, gain modes, bias-T persistence
+- [ ] **Phase 12: Multi-Client Daemon Architecture** - Cause, we can't hose and prevent other connections.
+- [ ] **Phase 13: Configurables** — Runtime buffer sizes, gain modes, bias-T persistence
 
 ## 📝 Reference Material
 

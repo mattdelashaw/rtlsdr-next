@@ -43,7 +43,8 @@ fn main() -> anyhow::Result<()> {
             break;
         }
     }
-    let mut handle = handle.ok_or_else(|| anyhow::anyhow!("No RTL2832U device found (0x0bda:0x2838)"))?;
+    let mut handle =
+        handle.ok_or_else(|| anyhow::anyhow!("No RTL2832U device found (0x0bda:0x2838)"))?;
 
     println!("Resetting USB device...");
     let _ = handle.reset();
@@ -59,7 +60,8 @@ fn main() -> anyhow::Result<()> {
             break;
         }
     }
-    let handle = new_handle.ok_or_else(|| anyhow::anyhow!("Device lost after reset — unplug and replug"))?;
+    let handle =
+        new_handle.ok_or_else(|| anyhow::anyhow!("Device lost after reset — unplug and replug"))?;
 
     let active_config = handle.active_configuration().unwrap_or(0);
     if active_config != 1 {
@@ -68,9 +70,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     match handle.kernel_driver_active(0) {
-        Ok(true)  => { println!("Detaching kernel driver..."); handle.detach_kernel_driver(0)?; }
+        Ok(true) => {
+            println!("Detaching kernel driver...");
+            handle.detach_kernel_driver(0)?;
+        }
         Ok(false) => println!("Kernel driver already detached."),
-        Err(e)    => println!("Kernel driver check failed: {:?}", e),
+        Err(e) => println!("Kernel driver check failed: {:?}", e),
     }
     handle.claim_interface(0)?;
     println!("Interface 0 claimed.\n");
@@ -97,10 +102,19 @@ fn main() -> anyhow::Result<()> {
         println!("   [SUCCESS] Hardware accepted the write!");
         // Dummy read flush — required after every demod write
         let mut b = [0u8; 1];
-        let _ = handle.read_control(0xc0, 0, (0x01u16 << 8) | 0x20, 0x000a, &mut b, Duration::from_millis(100));
+        let _ = handle.read_control(
+            0xc0,
+            0,
+            (0x01u16 << 8) | 0x20,
+            0x000a,
+            &mut b,
+            Duration::from_millis(100),
+        );
         println!("   Dummy read flush: OK");
     } else {
-        println!("   [FAIL] Hardware rejected the write — check USB permissions and kernel driver status");
+        println!(
+            "   [FAIL] Hardware rejected the write — check USB permissions and kernel driver status"
+        );
     }
 
     Ok(())

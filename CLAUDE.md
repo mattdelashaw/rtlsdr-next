@@ -50,7 +50,7 @@ Async Rust RTL-SDR driver. Tokio-native stream architecture. Primary target: RTL
 - `write_reg_mask` — opens/closes repeater itself (standalone use)
 - `write_reg_mask_raw` — no repeater toggle, must be inside `with_repeater`
 - `with_repeater(|| { ... })` — single open/close for entire mux+pll sequence
-- Before: ~20 repeater toggles = ~270ms per `set_frequency`. After: 1 toggle = ~45ms
+- Before: ~20 repeater toggles = ~270ms. After: 1 toggle = ~45ms for tuner chip. Total system latency (including DDC sync) is ~110ms.
 
 ## rtl_tcp Protocol (SDR++ specifics)
 - `0x01` set frequency, `0x02` set sample rate, `0x04` set gain (tenths dB)

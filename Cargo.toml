@@ -78,6 +78,18 @@ path = "examples/monitor.rs"
 name = "hw_probe"
 path = "examples/diag/hw_probe.rs"
 
+[[example]]
+name = "diag_raw_clone"
+path = "examples/diag/diag_raw_clone.rs"
+
+[[example]]
+name = "diag_write"
+path = "examples/diag/diag_write.rs"
+
+[[example]]
+name = "diag_demod"
+path = "examples/diag/diag_demod.rs"
+
 [profile.release]
 opt-level = 3
 lto = true

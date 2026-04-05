@@ -37,9 +37,15 @@ fn main() -> anyhow::Result<()> {
         let mut found = false;
         for device in devices.iter() {
             let desc = device.device_descriptor()?;
-            if desc.vendor_id() == 0x0bda && (desc.product_id() == 0x2838 || desc.product_id() == 0x2832) {
+            if desc.vendor_id() == 0x0bda
+                && (desc.product_id() == 0x2838 || desc.product_id() == 0x2832)
+            {
                 found = true;
-                println!("  Device found on Bus {:03} Address {:03}", device.bus_number(), device.address());
+                println!(
+                    "  Device found on Bus {:03} Address {:03}",
+                    device.bus_number(),
+                    device.address()
+                );
 
                 match device.open() {
                     Ok(handle) => {
@@ -49,17 +55,31 @@ fn main() -> anyhow::Result<()> {
 
                         println!("  Testing SYS read (Block 2, Reg 1)...");
                         let mut b = [0u8; 1];
-                        let res = handle.read_control(0xc0, 0, 0x0001, 0x0200, &mut b, Duration::from_millis(200));
+                        let res = handle.read_control(
+                            0xc0,
+                            0,
+                            0x0001,
+                            0x0200,
+                            &mut b,
+                            Duration::from_millis(200),
+                        );
                         println!("    Result: {:?}", res);
 
                         handle.release_interface(0)?;
                         return Ok(());
                     }
-                    Err(e) => println!("  Open FAILED: {:?}\n  Try: sudo usbreset /dev/bus/usb/{:03}/{:03}", e, device.bus_number(), device.address()),
+                    Err(e) => println!(
+                        "  Open FAILED: {:?}\n  Try: sudo usbreset /dev/bus/usb/{:03}/{:03}",
+                        e,
+                        device.bus_number(),
+                        device.address()
+                    ),
                 }
             }
         }
-        if !found { println!("  Device not visible to OS — try unplugging and replugging"); }
+        if !found {
+            println!("  Device not visible to OS — try unplugging and replugging");
+        }
         std::thread::sleep(Duration::from_secs(1));
     }
 
