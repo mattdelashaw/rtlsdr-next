@@ -5,7 +5,9 @@ pub mod demod;
 pub mod device;
 
 use device::HardwareInterface;
+pub mod config;
 pub mod converter;
+pub mod daemon;
 pub mod dsp;
 pub mod error;
 pub mod registers;
@@ -16,6 +18,8 @@ pub mod tuner;
 pub mod tuners;
 pub mod websdr;
 
+pub use config::DaemonConfig;
+pub use daemon::Daemon;
 pub use demod::DEFAULT_SAMPLE_RATE;
 pub use device::{Device, DeviceInfo};
 pub use error::{Error, Result};

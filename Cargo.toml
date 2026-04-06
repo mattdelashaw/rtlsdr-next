@@ -25,6 +25,10 @@ path = "src/bin/rtl_tcp.rs"
 name = "websdr"
 path = "src/bin/websdr.rs"
 
+[[bin]]
+name = "rtlsdr-daemon"
+path = "src/bin/daemon.rs"
+
 [lib]
 name = "rtlsdr_next"
 path = "src/lib.rs"
@@ -39,6 +43,7 @@ axum = { version = "0.8.1", features = ["ws"] }
 axum-server = { version = "0.7.1", features = ["tls-rustls"] }
 rustls-pemfile = "2.1"
 byteorder = "1.5.0"
+clap = { version = "4", features = ["derive"] }
 env_logger = "0.11.5"
 futures-util = { version = "0.3.32", features = ["sink"] }
 libc = "0.2.182"
@@ -50,6 +55,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full"] }
+toml = "0.8"
 parking_lot = "0.12"
 tokio-util = { version = "0.7.13", features = ["rt"] }
 zerocopy = { version = "0.8.40", features = ["derive"] }

@@ -1,0 +1,82 @@
+# rtlsdr-next daemon configuration
+# All values shown are the compiled-in defaults.
+# Omit any field to accept the default.
+# Run `rtlsdr-daemon --help` to see which fields can be overridden per-run via CLI flags.
+
+# ── Hardware ──────────────────────────────────────────────────────────────────
+
+[hardware]
+
+# USB device index. Increment if you have multiple dongles connected.
+device_index = 0
+
+# Hardware IQ sample rate in Hz.
+# Must be in the range 225_000–3_200_000. Values outside this range are rejected
+# by the RTL2832U resampler. 1_536_000 divides cleanly to 48 kHz audio (÷32).
+sample_rate = 1_536_000
+
+# Center frequency the hardware tunes to on startup, in Hz.
+initial_freq = 101_100_000   # 101.1 MHz — mid-FM band
+
+# Initial RF gain in dB. Applied to the tuner chip at startup.
+# Valid range depends on tuner: R828D supports roughly 0.0–49.6 dB in discrete steps.
+# The driver snaps to the nearest valid step.
+initial_gain = 30.0
+
+# Crystal frequency correction in parts-per-million.
+# Positive values shift the effective xtal frequency up (corrects a slow crystal).
+# Run `rtl_test -p` from the rtl-sdr-blog tools to measure your dongle's PPM offset.
+ppm = 0
+
+# Enable the bias tee (5V on the SMA connector) at startup.
+# WARNING: Do not enable with a passive antenna — only use with powered LNAs or
+# active antennas that are designed to accept DC bias.
+bias_t = false
+
+# ── Stream ────────────────────────────────────────────────────────────────────
+
+[stream]
+
+# Number of USB bulk transfer buffers in the pool.
+# Higher values = more latency headroom, less risk of dropouts under load.
+# Lower values = lower latency, higher dropout risk on a busy system.
+# Default (~1 s latency, dropout-resistant on Pi 5):
+num_buffers = 16
+
+# Size of each USB bulk transfer buffer in bytes.
+# Must be a multiple of 512 (USB bulk endpoint packet size).
+# 262144 = 256 KB = one full USB transfer at 2 MSPS.
+buffer_size = 262144
+
+# ── Servers ───────────────────────────────────────────────────────────────────
+
+[servers]
+
+# rtl_tcp — compatible with OpenWebRX+, GQRX, SDR++, SDR# (via rtl_tcp plugin).
+# Comment out or remove to disable.
+# rtl_tcp = "0.0.0.0:1234"
+
+# WebSDR — browser-based WebSocket SDR. Streams waterfall + demodulated audio.
+# Comment out or remove to disable.
+# websdr = "0.0.0.0:8080"
+
+# Unix Domain Socket — zero-copy local sharing for processes on the same host.
+# Only available on Unix (Linux/macOS). Ignored on Windows.
+# unix_socket = "/tmp/rtlsdr.sock"
+
+# ── TLS ───────────────────────────────────────────────────────────────────────
+
+# TLS is optional and only applies to the WebSDR server (enables wss://).
+# Both cert and key must be set together, or neither.
+# Required by iOS App Transport Security when using a public domain.
+#
+# Let's Encrypt example:
+#   cert = "/etc/letsencrypt/live/yourdomain.com/fullchain.pem"
+#   key  = "/etc/letsencrypt/live/yourdomain.com/privkey.pem"
+#
+# Self-signed (testing only):
+#   openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+
+[tls]
+# cert = "/etc/letsencrypt/live/yourdomain.com/fullchain.pem"
+# key  = "/etc/letsencrypt/live/yourdomain.com/privkey.pem"
