@@ -11,7 +11,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting rtlsdr-next FM radio example...");
 
     // 1. Open device
-    let mut driver = Driver::new()?;
+    let mut driver = Driver::with_index(0)?;
     info!(
         "Device: {} {}",
         driver.info.manufacturer, driver.info.product
@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     // 2. Configure for FM Broadcast
     // Typical FM station in many regions: 100.0 MHz
     let freq = 100_000_000;
-    driver.set_frequency(freq)?;
+    driver.set_frequency(freq, None)?;
     driver.tuner.set_gain(32.8)?;
 
     // We want to decimate down to something manageable for audio.

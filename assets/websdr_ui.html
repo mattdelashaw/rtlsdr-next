@@ -179,6 +179,13 @@
         </div>
 
         <div class="control-group">
+            <span class="control-label">Squelch <span id="sq-label" style="color:var(--neon-blue); margin-left:4px">-80 dB</span></span>
+            <div class="slider-container">
+                <input type="range" id="sq-slider" min="-100" max="-20" step="1" value="-80" oninput="setSquelch()">
+            </div>
+        </div>
+
+        <div class="control-group">
             <span class="control-label">Waterfall Controls</span>
             <div style="display:flex; gap:10px; align-items:center">
                 <span class="control-label" style="font-size:0.55rem">SENS</span>
@@ -233,15 +240,14 @@
         // --- State Management ---
         let state = {
             connected: false,
-            frequency: 101100000,
+            frequency: 101100000, // Hardware center
+            vfoFrequency: 101100000, // Client listening freq
             gain: 30,
             mode: 'wfm',
-            sampleRate: 48000, // Default, will be updated by handshake
-            span: 1536000,     // Backend PIPELINE_SAMPLE_RATE
+            sampleRate: 48000,
+            span: 1536000,
             fftSize: 1024,
-            waterfallSpeed: 1,
             audioRunning: false,
-            magBuffer: null,
             wfSens: 8,
             wfOffs: 5
         };
@@ -276,9 +282,45 @@
                 c.height = rect.height;
             });
             drawRuler();
+            drawUI();
         }
         window.addEventListener('resize', resize);
         resize();
+
+        function drawUI() {
+            const { ui: ctx } = ctxs;
+            const width = canvases.ui.width;
+            const height = canvases.ui.height;
+            ctx.clearRect(0, 0, width, height);
+
+            // 1. Draw VFO Marker
+            const start = state.frequency - (state.span / 2);
+            const x = ((state.vfoFrequency - start) / state.span) * width;
+            
+            // Central line
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, height);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Filter BW Shadow
+            const bw = parseInt(document.getElementById('bw-slider').value);
+            const bwPx = (bw / state.span) * width;
+            ctx.fillStyle = 'rgba(0, 210, 255, 0.2)';
+            ctx.fillRect(x - bwPx/2, 0, bwPx, height);
+            
+            // Top handle
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.moveTo(x - 6, 0);
+            ctx.lineTo(x + 6, 0);
+            ctx.lineTo(x, 10);
+            ctx.fill();
+        }
 
         // --- WebSocket ---
         let ws;
@@ -307,29 +349,38 @@
                 }
             };
         }
-
         function handleJson(msg) {
-            if (msg.type === 'hardwareinfo') {
-                document.getElementById('hw-status').innerText = `Hardware: ${msg.manufacturer} ${msg.product}`;
-            } else if (msg.type === 'audioconfig') {
-                state.sampleRate = msg.sample_rate;
-                state.fftSize = msg.fft_size;
-                document.getElementById('stream-info').innerText = `Span: 1.536 MHz | Rate: ${msg.sample_rate/1000} kHz`;
-            } else if (msg.type === 'freqconfirm') {
-                state.frequency = msg.requested;
-                document.getElementById('freq-val').innerText = msg.requested.toLocaleString().replace(/,/g, '.');
-                drawRuler();
-            } else if (msg.type === 'gainconfirm') {
-                state.gain = msg.actual;
-                document.getElementById('gain-slider').value = msg.actual;
-                document.getElementById('gain-label').innerText = `${msg.actual.toFixed(0)} dB`;
-            } else if (msg.type === 'demodconfirm') {
-                state.mode = msg.mode;
-                document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
-                document.getElementById(`mode-${msg.mode}`).classList.add('active');
-            } else if (msg.type === 'bandwidthconfirm') {
-                document.getElementById('bw-slider').value = msg.actual;
-                document.getElementById('bw-label').innerText = `${(msg.actual / 1000).toFixed(1)} kHz`;
+            switch (msg.type) {
+                case 'hardwareinfo':
+                    document.getElementById('hw-status').innerText = `Hardware: ${msg.manufacturer} ${msg.product}`;
+                    break;
+                case 'audioconfig':
+                    state.sampleRate = msg.sample_rate;
+                    state.fftSize = msg.fft_size;
+                    document.getElementById('stream-info').innerText = `Span: 1.536 MHz | Rate: ${msg.sample_rate / 1000} kHz`;
+                    break;
+                case 'freqconfirm':
+                    state.frequency = msg.actual;
+                    state.vfoFrequency = msg.requested;
+                    document.getElementById('freq-val').innerText = msg.requested.toLocaleString().replace(/,/g, '.');
+                    drawRuler();
+                    drawUI();
+                    break;
+                case 'gainconfirm':
+                    state.gain = msg.actual;
+                    document.getElementById('gain-slider').value = msg.actual;
+                    document.getElementById('gain-label').innerText = `${msg.actual.toFixed(0)} dB`;
+                    break;
+                case 'demodconfirm':
+                    state.mode = msg.mode;
+                    document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
+                    document.getElementById(`mode-${msg.mode}`).classList.add('active');
+                    break;
+                case 'bandwidthconfirm':
+                    document.getElementById('bw-slider').value = msg.actual;
+                    document.getElementById('bw-label').innerText = `${(msg.actual / 1000).toFixed(1)} kHz`;
+                    drawUI();
+                    break;
             }
         }
 
@@ -491,6 +542,12 @@
         function setBandwidth() {
             const hz = parseInt(document.getElementById('bw-slider').value);
             if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'bandwidth', hz }));
+            drawUI();
+        }
+        function setSquelch() {
+            const db = parseFloat(document.getElementById('sq-slider').value);
+            document.getElementById('sq-label').innerText = `${db} dB`;
+            if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'squelch', db }));
         }
         function updateVol() {
             const v = document.getElementById('vol-slider').value;
@@ -508,6 +565,8 @@
             const pct = x / rect.width;
             const start = state.frequency - (state.span / 2);
             const targetHz = Math.round(start + (pct * state.span));
+            state.vfoFrequency = targetHz;
+            drawUI();
             setFrequency(targetHz);
         });
 

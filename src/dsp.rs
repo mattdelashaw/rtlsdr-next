@@ -10,6 +10,7 @@
 //!   - `design_lowpass`  — windowed-sinc FIR coefficient generator
 //!   - `Decimator`       — stateful FIR+decimate with history overlap buffer
 //!     (handles block boundaries correctly)
+//!   - `Nco`             — Numerically Controlled Oscillator for DDC frequency shift
 //!   - NEON fast-path on aarch64, scalar fallback everywhere else
 //!
 //! # RTL-SDR usage
@@ -80,6 +81,8 @@ pub struct Decimator {
     pub factor: usize,
     /// Sample offset into the current block for correct phase tracking
     pub phase: usize,
+    /// Persistent scratch buffer for [history || input] to avoid allocations.
+    pub extended: Vec<f32>,
 }
 
 impl Decimator {
@@ -98,6 +101,7 @@ impl Decimator {
             history,
             factor,
             phase: 0,
+            extended: Vec::with_capacity(num_taps + 32768),
         }
     }
 
@@ -122,31 +126,29 @@ impl Decimator {
         let taps_len = self.taps.len();
         let overlap = taps_len - 1;
 
-        // Note: Using a pre-allocated extended buffer would be even faster,
-        // but for now let's focus on the output allocation.
-        let mut extended = Vec::with_capacity(overlap + input.len());
-        extended.extend_from_slice(&self.history);
-        extended.extend_from_slice(input);
+        self.extended.clear();
+        self.extended.extend_from_slice(&self.history);
+        self.extended.extend_from_slice(input);
 
         // Run FIR + decimate
         #[cfg(target_arch = "aarch64")]
         {
             if std::arch::is_aarch64_feature_detected!("neon") {
                 unsafe {
-                    fir_decimate_neon(&extended, &self.taps, self.factor, &mut self.phase, output);
+                    fir_decimate_neon(&self.extended, &self.taps, self.factor, &mut self.phase, output);
                 }
                 // Update history
-                let new_history_start = extended.len() - overlap;
-                self.history.copy_from_slice(&extended[new_history_start..]);
+                let new_history_start = self.extended.len() - overlap;
+                self.history.copy_from_slice(&self.extended[new_history_start..]);
                 return;
             }
         }
 
-        fir_decimate_scalar(&extended, &self.taps, self.factor, &mut self.phase, output);
+        fir_decimate_scalar(&self.extended, &self.taps, self.factor, &mut self.phase, output);
 
         // Update history for next block
-        let new_history_start = extended.len() - overlap;
-        self.history.copy_from_slice(&extended[new_history_start..]);
+        let new_history_start = self.extended.len() - overlap;
+        self.history.copy_from_slice(&self.extended[new_history_start..]);
     }
 
     /// Process a block of samples and return a new Vec.
@@ -425,11 +427,9 @@ impl AudioAgc {
             }
 
             if self.envelope < self.min_magnitude {
-                // Signal is dead air. Decay gain slowly toward a low floor (0.1)
+                // Signal is dead air. Freeze gain to avoid pumping.
                 if self.hang_counter > 0 {
                     self.hang_counter -= 1;
-                } else if self.gain > 0.1 {
-                    self.gain -= 0.0001;
                 }
                 *val *= self.gain;
                 continue;
@@ -486,10 +486,9 @@ impl FmDemodulator {
         self
     }
 
-    /// Process a block of interleaved I/Q samples.
-    /// Returns a vector of real (f32) demodulated samples.
-    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
-        let mut output = Vec::with_capacity(input.len() / 2);
+    /// Process a block of interleaved I/Q samples into a provided destination.
+    pub fn process_into(&mut self, input: &[f32], output: &mut Vec<f32>) {
+        output.clear();
         for i in (0..input.len()).step_by(2) {
             let i_val = input[i];
             let q_val = input[i + 1];
@@ -508,9 +507,17 @@ impl FmDemodulator {
             self.deemph_state =
                 (1.0 - self.deemph_alpha) * self.deemph_state + self.deemph_alpha * diff;
 
-            output.push(self.deemph_state);
+            // Scale to [-1.0, 1.0] — diff is in [-PI, PI]
+            output.push(self.deemph_state / std::f32::consts::PI);
             self.last_phase = phase;
         }
+    }
+
+    /// Process a block of interleaved I/Q samples.
+    /// Returns a vector of real (f32) demodulated samples.
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        let mut output = Vec::with_capacity(input.len() / 2);
+        self.process_into(input, &mut output);
         output
     }
 }
@@ -532,6 +539,8 @@ impl Default for FmDemodulator {
 pub struct HilbertFilter {
     taps: Vec<f32>,
     history: Vec<f32>,
+    /// Persistent scratch buffer for [history || input] to avoid allocations.
+    extended: Vec<f32>,
 }
 
 impl HilbertFilter {
@@ -564,6 +573,7 @@ impl HilbertFilter {
         Self {
             taps,
             history: vec![0.0f32; num_taps - 1],
+            extended: Vec::with_capacity(num_taps + 1024),
         }
     }
 
@@ -573,22 +583,27 @@ impl HilbertFilter {
         let taps_len = self.taps.len();
         let overlap = taps_len - 1;
 
-        let mut extended = Vec::with_capacity(overlap + input.len());
-        extended.extend_from_slice(&self.history);
-        extended.extend_from_slice(input);
+        self.extended.clear();
+        self.extended.extend_from_slice(&self.history);
+        self.extended.extend_from_slice(input);
 
-        // Standard FIR convolution
+        // Optimized FIR convolution skipping zero-valued taps
+        // The Hilbert kernel has zeros at all even offsets from the center.
         for i in 0..input.len() {
             let mut acc = 0.0f32;
-            let window = &extended[i..i + taps_len];
-            for (s, t) in window.iter().zip(self.taps.iter()) {
-                acc += s * t;
+            let window = &self.extended[i..i + taps_len];
+            
+            // Only process odd-indexed taps (relative to start) because even ones are zero.
+            // Note: Since mid is even (e.g. 32 for 65 taps), and n = idx - mid,
+            // n is odd when idx is odd.
+            for j in (1..taps_len).step_by(2) {
+                acc += window[j] * self.taps[j];
             }
             output.push(acc);
         }
 
-        let new_history_start = extended.len() - overlap;
-        self.history.copy_from_slice(&extended[new_history_start..]);
+        let new_history_start = self.extended.len() - overlap;
+        self.history.copy_from_slice(&self.extended[new_history_start..]);
     }
 }
 
@@ -598,6 +613,12 @@ pub struct SsbDemodulator {
     q_shifted: Vec<f32>,
     i_history: Vec<f32>,
     is_usb: bool,
+    /// Persistent scratch buffer for I branch
+    i_branch: Vec<f32>,
+    /// Persistent scratch buffer for Q branch
+    q_branch: Vec<f32>,
+    /// Persistent scratch buffer for I history extension
+    i_extended: Vec<f32>,
 }
 
 impl SsbDemodulator {
@@ -609,33 +630,37 @@ impl SsbDemodulator {
             q_shifted: Vec::with_capacity(1024),
             i_history: vec![0.0f32; delay],
             is_usb,
+            i_branch: Vec::with_capacity(1024),
+            q_branch: Vec::with_capacity(1024),
+            i_extended: Vec::with_capacity(2048),
         }
     }
 
-    /// Process interleaved I/Q samples and return real audio.
-    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+    /// Process interleaved I/Q samples into real audio in a provided destination.
+    pub fn process_into(&mut self, input: &[f32], output: &mut Vec<f32>) {
+        output.clear();
         let n = input.len() / 2;
-        let mut i_branch = Vec::with_capacity(n);
-        let mut q_branch = Vec::with_capacity(n);
+        self.i_branch.clear();
+        self.q_branch.clear();
 
         for k in 0..n {
-            i_branch.push(input[k * 2]);
-            q_branch.push(input[k * 2 + 1]);
+            self.i_branch.push(input[k * 2]);
+            self.q_branch.push(input[k * 2 + 1]);
         }
 
         // 1. Transform Q branch (90 deg shift)
-        self.hilbert.process_into(&q_branch, &mut self.q_shifted);
+        self.hilbert.process_into(&self.q_branch, &mut self.q_shifted);
 
         // 2. Combine with delayed I branch
-        let mut output = Vec::with_capacity(n);
-        let delay = self.i_history.len();
+        let _delay = self.i_history.len();
 
-        let mut i_extended = Vec::with_capacity(delay + n);
-        i_extended.extend_from_slice(&self.i_history);
-        i_extended.extend_from_slice(&i_branch);
+        self.i_extended.clear();
+        self.i_extended.extend_from_slice(&self.i_history);
+        self.i_extended.extend_from_slice(&self.i_branch);
 
-        for (i_val, &q_hat) in i_extended.iter().zip(self.q_shifted.iter()) {
+        for (i_val, &q_hat) in self.i_extended.iter().zip(self.q_shifted.iter()) {
             // Phasing formula: USB = I + Q_hat, LSB = I - Q_hat
+            // Note: Standard convention for complex baseband I+jQ
             if self.is_usb {
                 output.push(i_val + q_hat);
             } else {
@@ -644,7 +669,13 @@ impl SsbDemodulator {
         }
 
         // Update I history
-        self.i_history.copy_from_slice(&i_extended[n..]);
+        self.i_history.copy_from_slice(&self.i_extended[n..]);
+    }
+
+    /// Process interleaved I/Q samples and return real audio.
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        let mut output = Vec::with_capacity(input.len() / 2);
+        self.process_into(input, &mut output);
         output
     }
 }
@@ -669,10 +700,9 @@ impl AmDemodulator {
         }
     }
 
-    /// Process a block of interleaved I/Q samples.
-    /// Returns a vector of real (f32) demodulated samples.
-    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
-        let mut output = Vec::with_capacity(input.len() / 2);
+    /// Process a block of interleaved I/Q samples into a provided destination.
+    pub fn process_into(&mut self, input: &[f32], output: &mut Vec<f32>) {
+        output.clear();
         for i in (0..input.len()).step_by(2) {
             let i_val = input[i];
             let q_val = input[i + 1];
@@ -692,6 +722,13 @@ impl AmDemodulator {
             self.hp_state = (1.0 - self.hp_alpha) * self.hp_state + self.hp_alpha * envelope;
             output.push(envelope - self.hp_state);
         }
+    }
+
+    /// Process a block of interleaved I/Q samples.
+    /// Returns a vector of real (f32) demodulated samples.
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        let mut output = Vec::with_capacity(input.len() / 2);
+        self.process_into(input, &mut output);
         output
     }
 }
@@ -699,6 +736,204 @@ impl AmDemodulator {
 impl Default for AmDemodulator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================
+// Numerically Controlled Oscillator (NCO)
+// ============================================================
+
+/// A Numerically Controlled Oscillator for digital down-conversion.
+///
+/// Produces the complex exponential `exp(-j·2π·f·n/fs)` sample by sample
+/// and multiplies it against an interleaved I/Q buffer to shift the spectrum
+/// by `-freq_hz`. Used in per-client DDC pipelines so each WebSDR client can
+/// listen to a different frequency within the hardware's capture bandwidth
+/// without triggering a hardware retune.
+///
+/// # Phase continuity
+/// `set_freq` updates `phase_inc` without resetting `phase`, so retuning
+/// within a stream produces no glitch or discontinuity.
+///
+/// # Precision
+/// Phase accumulation uses `f64` internally to prevent drift over long
+/// continuous streams — the phase would accumulate ~0.3° of error per second
+/// at 1.5 MSPS with `f32`. The final `sin`/`cos` are computed in `f32`
+/// because that is sufficient for the subsequent audio processing.
+pub struct Nco {
+    /// Current phase in radians, accumulated in f64 to prevent long-term drift.
+    phase: f64,
+    /// Phase increment per sample = 2π · freq_hz / sample_rate_hz.
+    phase_inc: f64,
+    /// Pre-computed rotator for complex rotation: exp(j * phase_inc).
+    /// Used for the fast complex-multiply rotation method.
+    rotator_i: f64,
+    rotator_q: f64,
+}
+
+impl Nco {
+    /// Create a new NCO.
+    ///
+    /// * `freq_hz`        — frequency to shift the spectrum by, in Hz.
+    ///                      Positive shifts signal at `center + freq_hz` to baseband.
+    /// * `sample_rate_hz` — hardware sample rate in Hz.
+    pub fn new(freq_hz: f64, sample_rate_hz: f64) -> Self {
+        let phase_inc = 2.0 * std::f64::consts::PI * freq_hz / sample_rate_hz;
+        Self {
+            phase: 0.0,
+            phase_inc,
+            rotator_i: phase_inc.cos(),
+            rotator_q: phase_inc.sin(),
+        }
+    }
+
+    /// Update the shift frequency without resetting the phase accumulator.
+    ///
+    /// Safe to call between blocks; produces no click or discontinuity.
+    pub fn set_freq(&mut self, freq_hz: f64, sample_rate_hz: f64) {
+        self.phase_inc = 2.0 * std::f64::consts::PI * freq_hz / sample_rate_hz;
+        self.rotator_i = self.phase_inc.cos();
+        self.rotator_q = self.phase_inc.sin();
+    }
+
+    /// Mix an interleaved I/Q buffer in-place, shifting the spectrum by `-freq_hz`.
+    ///
+    /// The rotation applied per sample is:
+    /// ```text
+    /// I' =  I·cos(φ) + Q·sin(φ)
+    /// Q' = -I·sin(φ) + Q·cos(φ)
+    /// ```
+    /// where φ = phase_inc · n (accumulated).
+    ///
+    /// # Panics
+    /// Panics (debug only) if `iq` length is not even.
+    pub fn mix(&mut self, iq: &mut [f32]) {
+        debug_assert_eq!(iq.len() % 2, 0, "IQ buffer length must be even");
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            if std::arch::is_aarch64_feature_detected!("neon") {
+                unsafe {
+                    self.mix_neon(iq);
+                }
+                return;
+            }
+        }
+
+        self.mix_scalar(iq);
+    }
+
+    fn mix_scalar(&mut self, iq: &mut [f32]) {
+        let mut cos_val = self.phase.cos();
+        let mut sin_val = self.phase.sin();
+        let rot_i = self.rotator_i;
+        let rot_q = self.rotator_q;
+
+        for chunk in iq.chunks_exact_mut(2) {
+            let i = chunk[0] as f64;
+            let q = chunk[1] as f64;
+
+            chunk[0] = (i * cos_val + q * sin_val) as f32;
+            chunk[1] = (-i * sin_val + q * cos_val) as f32;
+
+            // Rotate phase: (cos + j*sin) * (rot_i + j*rot_q)
+            let next_cos = cos_val * rot_i - sin_val * rot_q;
+            let next_sin = cos_val * rot_q + sin_val * rot_i;
+            cos_val = next_cos;
+            sin_val = next_sin;
+
+            self.phase += self.phase_inc;
+        }
+
+        // Re-sync phase to prevent cumulative error in complex rotation.
+        // Complex rotation is fast but slowly drifts in magnitude.
+        // We wrap phase to [-π, π] to prevent f64 precision loss over time.
+        if self.phase > std::f64::consts::PI {
+            self.phase -= 2.0 * std::f64::consts::PI;
+        } else if self.phase < -std::f64::consts::PI {
+            self.phase += 2.0 * std::f64::consts::PI;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "neon")]
+    unsafe fn mix_neon(&mut self, iq: &mut [f32]) {
+        use std::arch::aarch64::*;
+
+        let mut cos_val = self.phase.cos();
+        let mut sin_val = self.phase.sin();
+        let rot_i = self.rotator_i;
+        let rot_q = self.rotator_q;
+
+        let mut i = 0;
+        // Process 2 complex samples (4 f32) at a time
+        while i + 3 < iq.len() {
+            let c0 = cos_val as f32;
+            let s0 = sin_val as f32;
+            
+            let next_cos0 = cos_val * rot_i - sin_val * rot_q;
+            let next_sin0 = cos_val * rot_q + sin_val * rot_i;
+            
+            let c1 = next_cos0 as f32;
+            let s1 = next_sin0 as f32;
+
+            // Vector: [I0, Q0, I1, Q1]
+            let v_iq = unsafe { vld1q_f32(iq.as_ptr().add(i)) };
+            
+            // IQ swizzled: [Q0, I0, Q1, I1]
+            let _v_qi = vrev64q_f32(v_iq);
+            
+            // Result lanes:
+            // lane 0: I0*c0 + Q0*s0  (I'0)
+            // lane 1: Q0*c0 - I0*s0  (Q'0)
+            // lane 2: I1*c1 + Q1*s1  (I'1)
+            // lane 3: Q1*c1 - I1*s1  (Q'1)
+            
+            let mut res = [0.0f32; 4];
+            res[0] = iq[i]   * c0 + iq[i+1] * s0;
+            res[1] = iq[i+1] * c0 - iq[i]   * s0;
+            res[2] = iq[i+2] * c1 + iq[i+3] * s1;
+            res[3] = iq[i+3] * c1 - iq[i+2] * s1;
+            
+            unsafe {
+                vst1q_f32(iq.as_mut_ptr().add(i), vld1q_f32(res.as_ptr()));
+            }
+
+            // Update complex oscillator for next pair
+            cos_val = next_cos0 * rot_i - next_sin0 * rot_q;
+            sin_val = next_cos0 * rot_q + next_sin0 * rot_i;
+            
+            i += 4;
+            self.phase += self.phase_inc * 2.0;
+        }
+
+        // Tail
+        while i < iq.len() {
+            let i_val = iq[i] as f64;
+            let q_val = iq[i+1] as f64;
+            iq[i] = (i_val * cos_val + q_val * sin_val) as f32;
+            iq[i+1] = (q_val * cos_val - i_val * sin_val) as f32;
+            
+            let next_cos = cos_val * rot_i - sin_val * rot_q;
+            let next_sin = cos_val * rot_q + sin_val * rot_i;
+            cos_val = next_cos;
+            sin_val = next_sin;
+            
+            i += 2;
+            self.phase += self.phase_inc;
+        }
+
+        if self.phase > std::f64::consts::PI {
+            self.phase -= 2.0 * std::f64::consts::PI;
+        } else if self.phase < -std::f64::consts::PI {
+            self.phase += 2.0 * std::f64::consts::PI;
+        }
+    }
+
+    /// Reset the phase accumulator to zero.
+    /// Use this when switching between unrelated streams.
+    pub fn reset(&mut self) {
+        self.phase = 0.0;
     }
 }
 
@@ -768,12 +1003,13 @@ mod tests {
         let output = fm.process(&input);
         assert_eq!(output.len(), 100);
         // Skip first sample (no last_phase)
+        let expected = omega / std::f32::consts::PI;
         for &v in &output[1..] {
-            assert!((v - omega).abs() < 1e-4);
+            assert!((v - expected).abs() < 1e-4);
         }
     }
 
-    // ── FIR design ───────────────────────────────────────────────────────
+    // ── FIR design ───────────────────────────────────────────────────────────
 
     #[test]
     fn test_lowpass_tap_count() {
@@ -803,20 +1039,14 @@ mod tests {
         }
     }
 
-    // ── Decimation math ──────────────────────────────────────────────────
+    // ── Decimation math ──────────────────────────────────────────────────────
 
     #[test]
     fn test_dc_passthrough() {
-        // A DC input should pass through a LPF and decimate correctly.
-        // We skip the initial filter transient — the first ceil(taps/2/factor)
-        // output samples are influenced by the zero-initialized history buffer.
         let mut dec = Decimator::new(4, 0.1, 17);
-        let input = vec![1.0f32; 128]; // longer input to get past transient
+        let input = vec![1.0f32; 128];
         let output = dec.process(&input);
-
         assert_eq!(output.len(), 128 / 4);
-
-        // Skip transient: ceil(num_taps / (2 * 4)) + 1
         let skip = (17 / (2 * 4)) + 2;
         for &v in &output[skip..] {
             assert!((v - 1.0).abs() < 0.01, "DC passthrough failed: {}", v);
@@ -833,16 +1063,11 @@ mod tests {
 
     #[test]
     fn test_nyquist_rejection() {
-        // A signal at exactly Nyquist (alternating +1/-1) should be
-        // heavily attenuated by the LPF before decimation.
-        // Use more taps for better stopband attenuation.
         let mut dec = Decimator::new(4, 0.1, 63);
         let input: Vec<f32> = (0..512)
             .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
             .collect();
         let output = dec.process(&input);
-
-        // Skip transient
         let skip = (63 / (2 * 4)) + 2;
         for &v in &output[skip..] {
             assert!(v.abs() < 0.1, "Nyquist not rejected: {}", v);
@@ -851,8 +1076,6 @@ mod tests {
 
     #[test]
     fn test_block_boundary_continuity() {
-        // Process the same signal in one block vs two half-blocks.
-        // Outputs (after the initial filter transient) should match.
         let signal: Vec<f32> = (0..512)
             .map(|i| (i as f32 * 0.01 * std::f32::consts::PI).sin())
             .collect();
@@ -866,7 +1089,6 @@ mod tests {
 
         assert_eq!(out_one.len(), out_two.len());
 
-        // Skip the initial filter transient (ceil(taps/2/factor) samples)
         let skip = (17 / 2 / 4) + 1;
         for i in skip..out_one.len() {
             assert!(
@@ -883,10 +1105,9 @@ mod tests {
     fn test_reset_clears_state() {
         let mut dec = Decimator::new(4, 0.1, 17);
         let signal = vec![1.0f32; 64];
-        let _ = dec.process(&signal); // warm up history
+        let _ = dec.process(&signal);
         dec.reset();
 
-        // After reset, history is zero so output should match a fresh decimator
         let mut dec2 = Decimator::new(4, 0.1, 17);
         let out1 = dec.process(&signal);
         let out2 = dec2.process(&signal);
@@ -896,7 +1117,7 @@ mod tests {
         }
     }
 
-    // ── NEON / scalar agreement ──────────────────────────────────────────
+    // ── NEON / scalar agreement ──────────────────────────────────────────────
 
     #[test]
     #[cfg(target_arch = "aarch64")]
@@ -909,7 +1130,6 @@ mod tests {
             .map(|i| (i as f32 * 0.05 * std::f32::consts::PI).sin())
             .collect();
 
-        // Scalar path — generate taps independently, don't access private field
         let taps_s = design_lowpass(17, 0.1);
         let out_s = {
             let taps_len = taps_s.len();
@@ -922,7 +1142,6 @@ mod tests {
             out
         };
 
-        // NEON path
         let out_n = {
             let taps_n = design_lowpass(17, 0.1);
             let taps_len = taps_n.len();
@@ -952,16 +1171,10 @@ mod tests {
     #[test]
     fn test_am_demod() {
         let mut am = AmDemodulator::new();
-        // Constant amplitude 1.0 -> 0.5 -> 1.0 -> 0.5
         let input = vec![1.0, 0.0, 0.5, 0.0, 1.0, 0.0, 0.5, 0.0];
         let output = am.process(&input);
         assert_eq!(output.len(), 4);
-        // The first sample is always 0.0 due to DC initialization logic
         assert_eq!(output[0], 0.0);
-
-        // Check that the demodulator is actually reacting to the 1.0 -> 0.5 drop
-        // Since it's a high-pass/DC-removed signal, a drop in magnitude
-        // should result in a negative-going value.
         assert!(
             output[1] < 0.0,
             "Output should drop when magnitude decreases"
@@ -970,32 +1183,26 @@ mod tests {
 
     #[test]
     fn test_audio_agc_hang_time() {
-        let mut agc = AudioAgc::new(1.0, 1.0, 0.01, 10.0, 1000.0, 0.01); // 10 samples hang
+        let mut agc = AudioAgc::new(1.0, 1.0, 0.01, 10.0, 1000.0, 0.01);
 
-        // 1. Signal at target
         let mut data = vec![1.0f32; 1];
         agc.process(&mut data);
         assert!((data[0] - 1.0).abs() < 0.1);
 
-        // 2. Signal drops to zero (below min_magnitude 0.01)
         let mut silence = vec![0.0f32; 5];
         agc.process(&mut silence);
-        // Gain should stay near 1.0 (frozen)
         assert!((agc.gain - 1.0).abs() < 1e-5);
 
-        // 3. Signal just above noise floor
         let mut noise = vec![0.02f32; 20];
         agc.process(&mut noise);
-        // Decay should finally start after hang time
         assert!(agc.gain > 1.0);
     }
 
     #[test]
     fn test_ssb_demod_suppression() {
-        let mut usb = SsbDemodulator::new(true); // USB
-        let mut lsb = SsbDemodulator::new(false); // LSB
+        let mut usb = SsbDemodulator::new(true);
+        let mut lsb = SsbDemodulator::new(false);
 
-        // Generate a 1kHz tone at 48kHz sample rate
         let fs = 48000.0;
         let f = 1000.0;
         let mut input = Vec::new();
@@ -1010,12 +1217,7 @@ mod tests {
         let out_usb = usb.process(&input);
         let out_lsb = lsb.process(&input);
 
-        // After the Hilbert filter settles (32 samples delay)
-        // For USB = I - Q_hat, where I = cos(w*t) and Q_hat = -cos(w*(t-32/fs))
-        // If aligned, USB should be 2*cos(w*(t-32/fs)) and LSB should be 0.
-        // Currently, I is NOT delayed, so it's cos(w*t) + cos(w*(t-32/fs)).
-
-        let start = 100; // Skip transient
+        let start = 100;
         let mut usb_energy = 0.0;
         let mut lsb_energy = 0.0;
         for i in start..900 {
@@ -1023,9 +1225,6 @@ mod tests {
             lsb_energy += out_lsb[i] * out_lsb[i];
         }
 
-        // With 65 taps, sideband suppression should be > 60dB if aligned.
-        // If misaligned by 32 samples (at 1kHz/48kHz, 32 samples is ~24 degrees)
-        // it will definitely not suppress well.
         assert!(
             usb_energy > 10.0 * lsb_energy,
             "LSB should be suppressed in USB mode. USB: {}, LSB: {}",
@@ -1041,5 +1240,128 @@ mod tests {
         dec.update_cutoff(0.2);
         assert_ne!(dec.taps, taps_orig);
         assert_eq!(dec.taps.len(), 17);
+    }
+
+    // ── NCO ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_nco_zero_shift_is_identity() {
+        // A zero-frequency NCO must leave the signal unchanged.
+        let mut nco = Nco::new(0.0, 1_536_000.0);
+        let original = vec![0.5f32, 0.3, -0.2, 0.8, 0.1, -0.4];
+        let mut iq = original.clone();
+        nco.mix(&mut iq);
+        for (a, b) in iq.iter().zip(original.iter()) {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "Zero-shift NCO changed sample: {} vs {}",
+                a,
+                b
+            );
+        }
+    }
+
+    #[test]
+    fn test_nco_shifts_fft_peak() {
+        // Generate a real tone at 100 kHz, shift it by -100 kHz → peak should
+        // move to 0 Hz (DC bin) after mixing.
+        let fs = 1_536_000.0f64;
+        let tone_hz = 100_000.0f64;
+        let n_samples = 1024usize;
+
+        // Build interleaved complex tone at +100 kHz
+        let mut iq: Vec<f32> = (0..n_samples)
+            .flat_map(|n| {
+                let phase = 2.0 * std::f64::consts::PI * tone_hz * n as f64 / fs;
+                [phase.cos() as f32, phase.sin() as f32]
+            })
+            .collect();
+
+        // Shift by +100 kHz (NCO freq = +100 kHz → phase_inc negative → spectrum shifts left)
+        let mut nco = Nco::new(tone_hz, fs);
+        nco.mix(&mut iq);
+
+        // After mixing the 100 kHz tone should be at DC.
+        // Compute magnitude of DC bin directly: sum of all samples / N.
+        let dc_i: f32 = iq.iter().step_by(2).sum::<f32>() / n_samples as f32;
+        let dc_q: f32 = iq.iter().skip(1).step_by(2).sum::<f32>() / n_samples as f32;
+        let dc_mag = (dc_i * dc_i + dc_q * dc_q).sqrt();
+
+        // DC magnitude should be close to 0.5 (amplitude of unit complex exp / 2
+        // because average of cos over full cycle → 0, but our shifted signal
+        // is now at DC so the mean is non-zero). Accept > 0.4 as a loose bound.
+        assert!(
+            dc_mag > 0.4,
+            "Expected DC peak after mixing, got dc_mag = {}",
+            dc_mag
+        );
+    }
+
+    #[test]
+    fn test_nco_phase_continuity_across_blocks() {
+        // Process the same signal in two blocks vs one block.
+        // The output should be identical (phase carried across boundary).
+        let fs = 1_536_000.0f64;
+        let shift = 200_000.0f64;
+        let n = 512usize;
+
+        let signal: Vec<f32> = (0..n * 2)
+            .flat_map(|k| {
+                let t = k as f64 / fs;
+                [(2.0 * std::f64::consts::PI * 50_000.0 * t).cos() as f32,
+                 (2.0 * std::f64::consts::PI * 50_000.0 * t).sin() as f32]
+            })
+            .collect();
+
+        // One-shot
+        let mut nco_one = Nco::new(shift, fs);
+        let mut one = signal.clone();
+        nco_one.mix(&mut one);
+
+        // Two blocks
+        let mut nco_two = Nco::new(shift, fs);
+        let mut two = signal.clone();
+        nco_two.mix(&mut two[..n * 2]);       // first half (all I/Q pairs)
+        nco_two.mix(&mut two[n * 2..]);       // second half — phase must continue
+
+        for (i, (a, b)) in one.iter().zip(two.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "Phase discontinuity at sample {}: one={} two={}",
+                i, a, b
+            );
+        }
+    }
+
+    #[test]
+    fn test_nco_set_freq_no_phase_reset() {
+        // Calling set_freq mid-stream must not reset the phase accumulator.
+        let fs = 1_536_000.0f64;
+        let mut nco = Nco::new(100_000.0, fs);
+
+        // Warm up phase to a non-zero value
+        let mut warmup = vec![1.0f32; 100];
+        nco.mix(&mut warmup);
+        let phase_before = nco.phase;
+
+        // Change frequency — phase must be unchanged
+        nco.set_freq(200_000.0, fs);
+        assert!(
+            (nco.phase - phase_before).abs() < 1e-12,
+            "set_freq must not reset phase: before={} after={}",
+            phase_before,
+            nco.phase
+        );
+    }
+
+    #[test]
+    fn test_nco_reset_clears_phase() {
+        let fs = 1_536_000.0f64;
+        let mut nco = Nco::new(100_000.0, fs);
+        let mut data = vec![1.0f32; 100];
+        nco.mix(&mut data);
+        assert!(nco.phase.abs() > 0.0);
+        nco.reset();
+        assert_eq!(nco.phase, 0.0);
     }
 }

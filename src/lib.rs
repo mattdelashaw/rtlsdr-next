@@ -1,13 +1,14 @@
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use log::debug;
 
+pub mod config;
+pub mod daemon;
 pub mod demod;
 pub mod device;
 
 use device::HardwareInterface;
-pub mod config;
 pub mod converter;
-pub mod daemon;
 pub mod dsp;
 pub mod error;
 pub mod registers;
@@ -47,12 +48,7 @@ use tuner::BoardOrchestrator;
 use tuner::TunerType;
 
 impl Driver {
-    pub fn new() -> Result<Self> {
-        let index = std::env::var("RTLSDR_DEVICE_INDEX")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-
+    pub fn with_index(index: u32) -> Result<Self> {
         let device = Arc::new(Device::open(index)?);
         let hw = device.as_ref();
 
@@ -196,18 +192,15 @@ impl Driver {
         })
     }
 
-    pub fn set_frequency(&mut self, hz: u64) -> Result<u64> {
+    pub fn set_frequency(&mut self, hz: u64, band: Option<&std::sync::Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>>) -> Result<u64> {
         let _t = std::time::Instant::now();
-        // 1. Calculate the tuning plan
         let plan = self.orchestrator.plan_tuning(hz);
 
-        // 2. Tell the chip driver about the notch state
         if let Err(e) = self.tuner.apply_notch(plan.in_notch) {
             log::error!("Failed to apply notch filter hint: {:?}", e);
             return Err(e);
         }
 
-        // 3. Tell the chip to tune (PLL + MUX)
         let actual = match self.tuner.set_frequency(plan.tuner_hz) {
             Ok(f) => f,
             Err(e) => {
@@ -220,7 +213,6 @@ impl Driver {
             }
         };
 
-        // 4. Board-level triplexer switching (if applicable).
         if let Some(path) = plan.input_path
             && let Err(e) = self.apply_input_path(hz, path)
         {
@@ -228,35 +220,57 @@ impl Driver {
             return Err(e);
         }
 
-        // 5. Sync demodulator IF.
+        // Hardware path settling: GPIO and triplexer switches require time
+        // for the analog transient to die down before re-syncing the demod.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
-        let if_hz = self.tuner.get_if_freq();
 
+        // Force explicit IF sync to 2.3MHz to ensure alignment with demodulator
+        let if_hz = 2_300_000u64;
+        self.tuner.set_if_freq(if_hz)?;
+
+        // Clean the demodulator state before re-syncing
+        demod::reset_demod(hw)?;
+
+        // Use the actual frequency set by the hardware for precise demodulator sync.
         demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
 
-        // DDC Sync (0x15): bit 0 = Enable, bit 2 = Invert Spectrum.
+        // The RTL2832U demodulator register 0x15 controls the DDC sync and spectral inversion.
+        // For Low-IF (R828D/R820T), we must explicitly write the correct mode.
+        // Sync: 0x01 = normal, 0x05 = inverted.
         let sync_val = if plan.spectral_inv { 0x05 } else { 0x01 };
+        debug!("demod::write_reg_direct: P1_PAGE, 0x15, sync_val={:02x} (spectral_inv={})", sync_val, plan.spectral_inv);
         demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, sync_val)?;
+        // Hardware protocol mandate: Dummy read after every demod write.
+        let _ = hw.demod_read_reg(0x0a, 0x01);
+
+        if let Some(band) = band {
+            let span = band.read().span_hz;
+            *band.write() = crate::daemon::HardwareBand {
+                center_hz: hz,
+                span_hz: span,
+                spectral_inv: plan.spectral_inv,
+            };
+        }
 
         self.frequency = hz;
         log::info!(
-            "Frequency set to {} Hz (actual: {}, HF_Inv: {}, took: {}ms)",
+            "Frequency set to {} Hz (requested: {}, Tuner: {}, HF_Inv: {}, took: {}ms)",
+            hz,
             hz,
             actual,
             plan.spectral_inv,
             _t.elapsed().as_millis()
         );
 
-        // Notify streams to flush old buffers
+        // Final flush to clear any remaining transient samples after tuning
         let _ = self.flush_tx.send(());
-
-        Ok(hz)
-    }
+        Ok(hz)    }
 
     fn apply_input_path(&self, _freq_hz: u64, path: InputPath) -> Result<()> {
         let hw = self.device.as_ref();
-        // 1. Physical board-level GPIO switch (GPIO 5 is upconverter power)
         hw.set_gpio_output(5)?;
         match path {
             InputPath::Hf => {
@@ -272,7 +286,6 @@ impl Driver {
                 hw.set_gpio_bit(5, true)?;
             }
         }
-        // 2. Chip-level internal mux (via masked register writes)
         self.tuner.set_input_path(path)
     }
 
@@ -283,11 +296,7 @@ impl Driver {
 
         let current_if = self.tuner.get_if_freq();
         let if_hz = if current_if > 0 {
-            if rate_hz < 2_500_000 {
-                2_300_000
-            } else {
-                3_570_000
-            }
+            if rate_hz < 2_500_000 { 2_300_000 } else { 3_570_000 }
         } else {
             0
         };
@@ -295,7 +304,6 @@ impl Driver {
         self.tuner.set_if_freq(if_hz)?;
         self.tuner.set_bandwidth(rate_hz)?;
 
-        // Sample rate reset is heavy — restore everything after.
         demod::reset_demod(hw)?;
         demod::set_sample_rate_xtal(hw, rate_hz, xtal)?;
         demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
@@ -316,7 +324,7 @@ impl Driver {
         let freq = self.frequency;
         let rate = self.sample_rate;
         if freq > 0 {
-            let _ = self.set_frequency(freq);
+            let _ = self.set_frequency(freq, None);
         }
         let _ = self.set_sample_rate(rate);
         Ok(())
@@ -333,7 +341,9 @@ impl Driver {
     fn corrected_xtal_hz(&self) -> u32 {
         let nominal = self.nominal_xtal as i64;
         let offset = (nominal * self.ppm as i64) / 1_000_000;
-        (nominal + offset) as u32
+        let corrected = (nominal + offset) as u32;
+        debug!("corrected_xtal_hz: nominal={}, ppm={}, corrected={}", nominal, self.ppm, corrected);
+        corrected
     }
 
     pub fn stream(&self) -> SampleStream<rusb::Context> {
@@ -355,13 +365,8 @@ impl Driver {
         tokio::spawn(async move {
             while let Some(res) = stream.next().await {
                 match res {
-                    Ok(samples) => {
-                        let _ = tx.send(Arc::new(samples.to_vec()));
-                    }
-                    Err(e) => {
-                        log::error!("Stream error: {:?}", e);
-                        break;
-                    }
+                    Ok(samples) => { let _ = tx.send(Arc::new(samples.to_vec())); }
+                    Err(e) => { log::error!("Stream error: {:?}", e); break; }
                 }
             }
         });

@@ -26,7 +26,7 @@ name = "websdr"
 path = "src/bin/websdr.rs"
 
 [[bin]]
-name = "rtlsdr-daemon"
+name = "daemon"
 path = "src/bin/daemon.rs"
 
 [lib]

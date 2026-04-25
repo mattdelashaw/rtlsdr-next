@@ -28,9 +28,11 @@ Other RTL2832U dongles with R820T/R820T2/E4000 tuners should work — hardware v
 - **Zero-Allocation Pipeline:** Custom buffer pooling eliminates memory allocations in the hot path.
 - **Auto-Vectorized DSP:** LLVM auto-vectorizes to NEON on aarch64 and AVX-512 on Zen 4 x86_64 — no manual intrinsics needed.
 - **Automatic Tuner Probing:** I2C presence detection for Rafael Micro (R820T/R828D), Elonics (E4000), and Fitipower (FC0012/13).
-- **Zero-Copy Broadcasting:** Share a single hardware device across multiple local apps via `Arc`-based broadcasting.
+- **Multi-Client Daemon:** A single `rtlsdr-daemon` process serves rtl_tcp, WebSDR, and Unix socket clients simultaneously from one hardware handle. No resource contention.
+- **Independent Virtual VFOs:** Each WebSDR browser client can tune independently within the hardware's 1.536 MHz capture window using a per-client NCO — no hardware retune needed for in-band frequency changes.
+- **TOML Configuration:** File-based config with CLI override support. Set gain, frequency, PPM, TLS, and server addresses once in `/etc/rtlsdr-next/config.toml`.
 - **Precision Frequency Correction:** Integrated PPM correction for both tuner PLL and RTL2832U resampler.
-- **Standalone Tools:** Optimized `rtl_tcp` and `websdr` binaries for professional distribution.
+- **Standalone Tools:** Individual `rtl_tcp` and `websdr` binaries remain available for single-protocol deployments.
 
 ## 🛠 Hardware: The V4 Deep Dive
 
@@ -165,9 +167,127 @@ On x86_64, `target-cpu=native` is not recommended — LLVM already auto-vectoriz
 
 ## ▶️ Usage
 
+### Unified Daemon (recommended)
+
+`rtlsdr-daemon` runs a single hardware driver instance and serves any combination
+of protocols simultaneously. This is the recommended deployment for anything beyond
+a single-client use case.
+
+```bash
+# Minimal — rtl_tcp only (SDR++, GQRX, OpenWebRX+)
+rtlsdr-daemon --rtl-tcp 0.0.0.0:1234
+
+# Both servers simultaneously
+rtlsdr-daemon --rtl-tcp 0.0.0.0:1234 --websdr 0.0.0.0:8080
+
+# With TLS on the WebSDR server (wss://)
+rtlsdr-daemon --websdr 0.0.0.0:8080 \
+  --cert /etc/letsencrypt/live/yourdomain.com/fullchain.pem \
+  --key  /etc/letsencrypt/live/yourdomain.com/privkey.pem
+
+# From a config file (see Configuration section below)
+rtlsdr-daemon -c /etc/rtlsdr-next/config.toml
+
+# Config file with a CLI override (--gain overrides the file value)
+rtlsdr-daemon -c /etc/rtlsdr-next/config.toml --gain 25.0
+```
+
+Full CLI reference:
+
+```
+Options:
+  -c, --config <PATH>          TOML config file
+      --device <INDEX>         USB device index [default: 0]
+      --sample-rate <HZ>       Hardware sample rate [default: 1536000]
+      --freq <HZ>              Initial center frequency [default: 101100000]
+      --gain <DB>              Initial RF gain in dB [default: 30.0]
+      --ppm <PPM>              Crystal PPM correction [default: 0]
+      --bias-t                 Enable bias tee on startup
+      --buffers <N>            USB transfer buffer count [default: 16]
+      --buffer-size <BYTES>    USB transfer buffer size [default: 262144]
+      --rtl-tcp <ADDR>         Enable rtl_tcp server
+      --websdr <ADDR>          Enable WebSDR server
+      --unix <PATH>            Enable Unix socket server (Unix only)
+      --cert <PATH>            TLS certificate PEM (enables wss://)
+      --key <PATH>             TLS private key PEM
+      --log-level <LEVEL>      error|warn|info|debug|trace [default: info]
+  -h, --help
+  -V, --version
+```
+
+#### 📻 Independent Virtual VFOs
+
+When multiple browser clients connect to the WebSDR server, each gets its own
+DSP pipeline with a dedicated Numerically Controlled Oscillator (NCO). Clients
+can tune independently to any frequency within the hardware's 1.536 MHz capture
+window without triggering a hardware retune — the NCO shifts the spectrum in
+software for each client independently.
+
+If a client tunes outside the current hardware window, the daemon automatically
+recenters the hardware and all clients recompute their NCO offsets. Clients
+already listening within the new window hear no interruption.
+
+#### ⚙️ Configuration File
+
+Copy `config/default.toml` from the repository as a starting point:
+
+```toml
+[hardware]
+device_index  = 0
+sample_rate   = 1_536_000   # Hz — must divide evenly to 48000 for WebSDR
+initial_freq  = 101_100_000 # Hz — 101.1 MHz
+initial_gain  = 30.0        # dB
+ppm           = 0
+bias_t        = false
+
+[stream]
+num_buffers  = 16       # increase if you hear dropouts
+buffer_size  = 262144   # bytes, must be multiple of 512
+
+[servers]
+rtl_tcp     = "0.0.0.0:1234"
+websdr      = "0.0.0.0:8080"
+# unix_socket = "/tmp/rtlsdr.sock"  # uncomment to enable (Unix only)
+
+[tls]
+# cert = "/etc/letsencrypt/live/yourdomain.com/fullchain.pem"
+# key  = "/etc/letsencrypt/live/yourdomain.com/privkey.pem"
+```
+
+Place it at `/etc/rtlsdr-next/config.toml` (system-wide) or
+`~/.config/rtlsdr-next/config.toml` (per-user) and run:
+
+```bash
+rtlsdr-daemon -c /etc/rtlsdr-next/config.toml
+```
+
+#### 🔄 Running as a systemd Service (Pi 5 / Linux)
+
+```ini
+# /etc/systemd/system/rtlsdr-daemon.service
+[Unit]
+Description=rtlsdr-next unified daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/rtlsdr-daemon -c /etc/rtlsdr-next/config.toml
+Restart=on-failure
+RestartSec=5
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now rtlsdr-daemon
+sudo journalctl -u rtlsdr-daemon -f
+```
+
 ### Standalone Tools
 
-Once installed, you can run the primary tools directly from your terminal:
+The individual binaries remain available for single-protocol deployments or when
+you don't need the daemon's multi-client capability.
 
 | Command | Description |
 |---------|-------------|
@@ -244,8 +364,6 @@ cargo run --release --example diag_demod
 cargo run --release --example diag_i2c
 ```
 
-
-
 ## 🧪 Testing
 
 ```bash
@@ -265,8 +383,8 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 | `RUST_LOG` | `warn` | Log level: `error`, `warn`, `info`, `debug`, `trace` |
 | `RTLSDR_DEVICE_INDEX` | `0` | USB device index if multiple dongles are connected |
 
--### Baseline Comparisons
--Measurements taken on an ARM64 host comparing the `rtlsdr-next` Rust implementation against the `librtlsdr` (v4 branch) C baseline using 256KB blocks:
+### Baseline Comparisons
+Measurements taken on an ARM64 host comparing the `rtlsdr-next` Rust implementation against the `librtlsdr` (v4 branch) C baseline using 256KB blocks:
 
 | Benchmark Task | librtlsdr (C) | rtlsdr-next (Rust) |
 | :--- | :--- | :--- |
@@ -296,8 +414,7 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 | **Full Pipeline (FIR/16)** | **N/A** | **678.84 µs** |
 | *Throughput* | N/A | 368.27 MiB/s |
 
-
--*Note: The performance gain in conversion is primarily due to moving from cache-latency-bound lookup tables to instruction-parallel arithmetic, which better utilizes modern out-of-order CPU pipelines.*
+*Note: The performance gain in conversion is primarily due to moving from cache-latency-bound lookup tables to instruction-parallel arithmetic, which better utilizes modern out-of-order CPU pipelines.*
 
 ## 🗺 Roadmap - Phaseshifting
 
@@ -312,7 +429,7 @@ Hardware-in-the-loop tests require a connected dongle and are run manually via t
 - [x] **Phase 9: Elonics E4000** — Full Zero-IF driver with manual gain control (theoretically)
 - [x] **Phase 10: Fitipower Tuners** — FC0012/FC0013 register maps
 - [x] **Phase 11: Cross-Platform** — Windows confirmed working via Zadig/WinUSB; x86_64 LLVM auto-vectorization benchmarked, no manual SIMD needed
-- [ ] **Phase 12: Multi-Client Daemon Architecture** - Cause, we can't hose and prevent other connections.
+- [x] **Phase 12: Multi-Client Daemon Architecture** — Single hardware handle, `rtl_tcp` + WebSDR + Unix socket simultaneously; per-client NCO DDC for independent virtual VFOs; TOML config + clap CLI
 - [ ] **Phase 13: Configurables** — Runtime buffer sizes, gain modes, bias-T persistence
 
 ## 📝 Reference Material

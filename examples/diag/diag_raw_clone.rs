@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
             break;
         }
     }
-    let mut handle =
+    let handle =
         handle.ok_or_else(|| anyhow::anyhow!("No RTL2832U device found (0x0bda:0x2838)"))?;
 
     println!("Resetting USB device...");

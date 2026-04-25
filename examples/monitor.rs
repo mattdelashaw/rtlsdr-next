@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting rtlsdr-next monitor example...");
 
     // 1. Discover and open the first available RTL-SDR device
-    let mut driver = match Driver::new() {
+    let mut driver = match Driver::with_index(0) {
         Ok(d) => d,
         Err(e) => {
             eprintln!(
@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     driver.set_ppm(0)?;
 
     // Set frequency to 100 MHz (VHF FM Band)
-    let actual_freq = driver.set_frequency(100_000_000)?;
+    let actual_freq = driver.set_frequency(100_000_000, None)?;
     info!(
         "Center Frequency set to: {:.3} MHz",
         actual_freq as f64 / 1e6

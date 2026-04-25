@@ -229,23 +229,13 @@ impl R82xx {
         }
 
         let vco_freq = lo_freq_hz * mix_div;
-        let status = self.read_status_raw()?;
-        let vco_fine_tune = (status[4] & 0x30) >> 4;
-
+        
         // R828D VCO power ref = 1, R820T = 2.
         let vco_power_ref: u64 = match self.tuner_type {
             TunerType::R828D => 1,
             TunerType::R820T => 2,
             _ => 1,
         };
-
-        if vco_fine_tune > vco_power_ref as u8 {
-            div_num = div_num.saturating_sub(1);
-        } else if (vco_fine_tune as u64) < vco_power_ref {
-            div_num += 1;
-        }
-
-        self.write_reg_mask_raw(0x10, div_num << 5, 0xe0)?;
 
         let nint: u64 = vco_freq / (2 * pll_ref);
         let mut vco_fra: u64 = (vco_freq - 2 * pll_ref * nint) / 1000;
@@ -255,12 +245,8 @@ impl R82xx {
 
         let ni = ((nint - 13) / 4) as u8;
         let si = (nint as u8).wrapping_sub(4u8.wrapping_mul(ni).wrapping_add(13));
-        self.device
-            .i2c_write_raw(self.i2c_addr, &[0x14, ni | (si << 6)])?;
-
+        
         let pw_sdm: u8 = if vco_fra == 0 { 0x08 } else { 0x00 };
-        self.write_reg_mask_raw(0x12, pw_sdm, 0x08)?;
-
         let mut sdm: u32 = 0;
         let mut n_sdm: u32 = 2;
         while vco_fra > 1 {
@@ -273,10 +259,28 @@ impl R82xx {
             }
             n_sdm <<= 1;
         }
-        self.device
-            .i2c_write_raw(self.i2c_addr, &[0x16, (sdm >> 8) as u8])?;
-        self.device
-            .i2c_write_raw(self.i2c_addr, &[0x15, (sdm & 0xff) as u8])?;
+
+        // ── Pass 1: Apply initial registers ───────────────────────────────
+        self.write_reg_mask_raw(0x10, div_num << 5, 0xe0)?;
+        self.device.i2c_write_raw(self.i2c_addr, &[0x14, ni | (si << 6)])?;
+        self.device.i2c_write_raw(self.i2c_addr, &[0x16, (sdm >> 8) as u8])?;
+        self.device.i2c_write_raw(self.i2c_addr, &[0x15, (sdm & 0xff) as u8])?;
+        self.write_reg_mask_raw(0x12, pw_sdm, 0x08)?;
+
+        // ── Settle & Probe ────────────────────────────────────────────────
+        // Give the VCO a moment to settle so status is valid for the NEW freq.
+        std::thread::sleep(Duration::from_millis(2));
+        let status = self.read_status_raw()?;
+        let vco_fine_tune = (status[4] & 0x30) >> 4;
+
+        // ── Pass 2: Adjust divisor if VCO band is off ─────────────────────
+        if vco_fine_tune > vco_power_ref as u8 {
+            div_num = div_num.saturating_sub(1);
+            self.write_reg_mask_raw(0x10, div_num << 5, 0xe0)?;
+        } else if (vco_fine_tune as u64) < vco_power_ref {
+            div_num += 1;
+            self.write_reg_mask_raw(0x10, div_num << 5, 0xe0)?;
+        }
 
         if self.wait_pll_lock_raw(10)? {
             self.write_reg_mask_raw(0x1a, 0x08, 0x08)?;

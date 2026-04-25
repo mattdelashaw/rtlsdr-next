@@ -3,7 +3,7 @@
 use crate::device::HardwareInterface;
 use crate::error::Result;
 use crate::registers::{block, demod, sys, usb};
-use log::debug;
+use log::{debug, info};
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 2_048_000;
 
@@ -122,8 +122,8 @@ pub fn set_if_freq_xtal(hw: &dyn HardwareInterface, if_hz: u32, xtal_hz: u32) ->
     hw.demod_write_reg(demod::P1_PAGE, 0x19, ((val >> 16) & 0x3f) as u8)?;
     hw.demod_write_reg(demod::P1_PAGE, 0x1a, ((val >> 8) & 0xff) as u8)?;
     hw.demod_write_reg(demod::P1_PAGE, 0x1b, (val & 0xff) as u8)?;
-    debug!(
-        "IF freq {}Hz (xtal {}Hz) if_freq_reg={}",
+    info!(
+        "demod::set_if_freq_xtal: if_hz={}Hz, xtal_hz={}Hz, if_freq_reg={}",
         if_hz, xtal_hz, if_freq
     );
     Ok(())

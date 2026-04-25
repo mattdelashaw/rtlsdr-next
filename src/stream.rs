@@ -159,6 +159,7 @@ impl<T: UsbContext + 'static> SampleStream<T> {
     pub async fn next(&mut self) -> Option<crate::Result<PooledBuffer<TransportBuffer<T>>>> {
         loop {
             tokio::select! {
+                biased;
                 // Priority 1: Handle flush signal
                 Ok(_) = self.flush_rx.recv() => {
                     // Drain all pending buffers from the receiver.
@@ -167,7 +168,8 @@ impl<T: UsbContext + 'static> SampleStream<T> {
                     // ensures the pool doesn't starve when we "nuke" stale data.
                     while self.receiver.try_recv().is_ok() {}
                     // Continue loop to wait for fresh data
-                }                // Priority 2: Return next available buffer
+                }
+                // Priority 2: Return next available buffer
                 res = self.receiver.recv() => {
                     return res;
                 }

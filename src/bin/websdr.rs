@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // 1. Open device
-    let driver = Driver::new()?;
+    let driver = Driver::with_index(0)?;
 
     // 2. Prepare TLS config
     let tls = if let (Some(c), Some(k)) = (args.cert, args.key) {

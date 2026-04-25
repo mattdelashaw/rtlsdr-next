@@ -76,9 +76,10 @@ impl BoardOrchestrator for V4Orchestrator {
         let mut spectral_inv = false;
 
         // V4 HF Upconverter (28.8 MHz offset)
+        // The V4 mixer translates 0-28.8 MHz up to 28.8-57.6 MHz (Additive).
         if hz < 28_800_000 {
-            tuner_hz += 28_800_000;
-            spectral_inv = true;
+            tuner_hz = hz + 28_800_000;
+            spectral_inv = false;
         }
 
         let input_path = if hz < 28_800_000 {
@@ -111,8 +112,9 @@ mod tests {
         let orch = V4Orchestrator;
         // 7 MHz HF
         let plan = orch.plan_tuning(7_000_000);
+        // Tuner = 7.0 + 28.8 = 35.8 MHz
         assert_eq!(plan.tuner_hz, 35_800_000);
-        assert!(plan.spectral_inv);
+        assert!(!plan.spectral_inv);
         assert_eq!(plan.input_path, Some(InputPath::Hf));
         assert!(!plan.in_notch); // 7 MHz is outside all notch bands
     }

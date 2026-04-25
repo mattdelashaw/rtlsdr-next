@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
     info!("Starting rtlsdr-next rtl_tcp server...");
 
     // 1. Open the device
-    let driver = match Driver::new() {
+    let driver = match Driver::with_index(0) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Error opening device: {:?}\n(Check USB permissions)", e);

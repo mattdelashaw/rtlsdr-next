@@ -6,8 +6,15 @@
 //! 3. CLI flag overrides (any `Some` field in `CliOverrides` wins)
 //!
 //! # Usage
-//! ```rust
+//! ```rust,no_run
+//! use std::path::Path;
+//! use rtlsdr_next::config::{DaemonConfig, CliOverrides};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let cli_overrides = CliOverrides::default();
 //! let cfg = DaemonConfig::load(Some(Path::new("my.toml")), &cli_overrides)?;
+//! # Ok(())
+//! # }
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -277,12 +284,13 @@ mod tests {
     #[test]
     fn test_defaults_parse() {
         // The compiled-in default TOML must parse cleanly on its own.
-        // We inject a minimal servers section so validation doesn't reject it.
-        let toml = format!(
-            "{}\n[servers]\nrtl_tcp = \"0.0.0.0:1234\"\n",
-            DEFAULT_TOML
-        );
-        let cfg: DaemonConfig = toml::from_str(&toml).expect("default TOML must parse");
+        let mut cfg: DaemonConfig = toml::from_str(DEFAULT_TOML)
+            .expect("default TOML must parse cleanly");
+        
+        // Temporarily enable a server for validation, as default has none.
+        cfg.servers.rtl_tcp = Some("0.0.0.0:1234".to_string());
+        cfg.validate().expect("default config with temp server should validate");
+
         assert_eq!(cfg.hardware.device_index, 0);
         assert_eq!(cfg.hardware.sample_rate, 1_536_000);
         assert_eq!(cfg.hardware.initial_freq, 101_100_000);

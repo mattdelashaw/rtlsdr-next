@@ -21,13 +21,14 @@ Async Rust RTL-SDR driver. Tokio-native stream architecture. Primary target: RTL
 - `SharingServer` — Unix Domain Socket server, `#[cfg(unix)]` only
 - `Daemon` — unified hardware orchestrator; owns `Driver`, runs broadcast pump, wires all servers
 - `DaemonConfig` — layered TOML config (compiled defaults → file → CLI flags)
+- `Nco` — Numerically Controlled Oscillator for per-client DDC frequency shifting (`dsp.rs`)
 
 ## Repo Layout
 - `src/bin/rtl_tcp.rs` — standalone rtl_tcp server binary (`-a/--address`, `-p/--port`)
 - `src/bin/websdr.rs` — standalone WebSDR server binary (`-a/--address`, `-p/--port`)
 - `src/bin/daemon.rs` — unified daemon binary (clap CLI, all servers, TOML config)
 - `src/config.rs` — `DaemonConfig`, `CliOverrides`, TOML schema and merge logic
-- `src/daemon.rs` — `Daemon` struct, broadcast pump, `HardwareBand` for DDC (Phase 3)
+- `src/daemon.rs` — `Daemon` struct, broadcast pump, `HardwareBand`, `RetuneRequest`
 - `examples/` — fm_radio, monitor, hw_probe, diag_*
 - `examples/diag/` — raw USB diagnostic tools (bypass driver, speak libusb directly)
 - `assets/websdr_ui.html` — WebSDR frontend, embedded via `include_str!()`
@@ -57,7 +58,8 @@ Async Rust RTL-SDR driver. Tokio-native stream architecture. Primary target: RTL
 - `SharingServer` and all of `server.rs` is `#[cfg(unix)]` — never import `tokio::net::UnixListener` without this gate
 - `Driver::new()` performs USB I/O and `thread::sleep` during init — always call it via `tokio::task::spawn_blocking` from async contexts. Calling it directly on a Tokio async thread will stall the runtime.
 - In the daemon, only `Daemon::start` calls `Driver::new()`. All servers receive an `Arc<Mutex<Driver>>` — they never construct a `Driver` themselves.
-- `TcpServer::start_shared` and `WebSdrServer::start_shared` are the daemon-facing entry points. The original `start(driver: Driver, ...)` signatures are kept for the standalone binaries only.
+- `TcpServer::start_shared` and `WebSdrServer::start_shared` accept a `broadcast::Sender` clone — NOT a Receiver. Each server/client calls `.subscribe()` directly on the Sender to get a fresh Receiver. Never introduce a relay task between the pump and consumers; relay tasks add an extra async hop and ring buffer that causes Lagged errors under load.
+- FIR `Decimator` uses overlap-save history that assumes block continuity. On any `broadcast::RecvError::Lagged`, reset ALL decimators, the DC remover, and the NCO before continuing — stale history produces sustained garbage output, not just a click.
 
 ## I2C Repeater Pattern (r82xx.rs)
 - `write_reg_mask` — opens/closes repeater itself (standalone use)
@@ -99,6 +101,18 @@ key  = "/etc/letsencrypt/live/example.com/privkey.pem"
 Validation rejects: sample_rate outside 225k–3.2M, buffer_size not multiple of 512,
 partial TLS (cert without key or vice versa), no servers enabled.
 
+## Daemon Broadcast Architecture
+```
+USB read → SampleStream → Daemon pump broadcast::Sender(64)
+                                    ├── rtl_tcp: .subscribe() per TCP client
+                                    ├── websdr:  .subscribe() per WebSocket client
+                                    └── unix:    .subscribe() → SharingServer
+```
+The pump holds a `broadcast::Sender` with capacity 64. Both `TcpServer::start_shared`
+and `WebSdrServer::start_shared` receive a **clone of the Sender** — they never receive
+a Receiver and never spawn relay tasks. Each incoming connection subscribes a fresh
+Receiver directly from the Sender. This keeps the broadcast chain to a single hop.
+
 ## StreamConfig
 Default (~1s latency, dropout-resistant):
 ```rust
@@ -110,6 +124,16 @@ StreamConfig { num_buffers: 4, buffer_size: 65536 }
 ```
 `SampleStream` flushes stale buffers automatically on `set_frequency` via broadcast.
 GQRX has its own internal buffer — remaining lag after our flush is client-side.
+
+## NCO / DDC (dsp.rs)
+`Nco::new(freq_hz, sample_rate_hz)` — phase accumulates in `f64` to prevent drift.
+`Nco::mix(&mut iq)` — in-place complex rotation: `I' = I·cos(φ) + Q·sin(φ)`, `Q' = -I·sin(φ) + Q·cos(φ)`.
+`Nco::set_freq(freq_hz, sample_rate_hz)` — updates phase_inc without resetting phase (glitch-free retuning).
+`Nco::reset()` — clears phase accumulator; call after Lagged errors or stream discontinuities.
+
+Per-client pipeline recomputes `nco.set_freq(band.offset_hz(client_freq), fs)` every block.
+This handles both in-band NCO retuning and hardware retuning (band shifts under the client)
+with zero explicit notification — the offset is always fresh from the live `HardwareBand`.
 
 ## Key Constants
 - R820T I2C: `0x34`, R828D I2C: `0x74`, check val: `0x69`
@@ -137,16 +161,19 @@ GQRX has its own internal buffer — remaining lag after our flush is client-sid
 - `DaemonConfig` — layered TOML + CLI config system (`src/config.rs`, `config/default.toml`)
 - `Daemon` — unified hardware orchestrator with broadcast pump (`src/daemon.rs`)
 - `rtlsdr-daemon` binary — clap CLI, all three servers, TOML config (`src/bin/daemon.rs`)
-- `TcpServer::start_shared` — daemon-facing rtl_tcp entry point (injected broadcast receiver)
-- `WebSdrServer::start_shared` — daemon-facing WebSDR entry point (injected broadcast receiver)
-- `HardwareBand` — in-band detection and NCO offset computation (Phase 3 scaffold)
+- `TcpServer::start_shared` / `WebSdrServer::start_shared` — accept Sender clone directly, no relay
+- `HardwareBand` + `RetuneRequest` — in-band DDC arbitration vs hardware retune
+- `Nco` — f64 phase accumulator, glitch-free `set_freq`, SIMD-friendly `mix`
+- Per-client WebSDR pipeline — each WebSocket connection owns its own DSP chain + NCO
+- Lagged recovery — all decimators + DC remover + NCO reset on dropped blocks
+- `broadcast::channel(64)` — larger ring buffer reduces Lagged probability under load
 
 ## Known Pending Items
 - Async USB transfers (libusb async API) — current blocking thread model works, noted for future
 - FC001x gain table is simplified (auto/manual toggle only) — discrete gain steps not mapped
-- Phase 3: NCO + ComplexMixer in dsp.rs for per-client DDC
-- Phase 3: Per-client WebSDR pipeline (run_pipeline spawned per WebSocket client)
-- Phase 3: Tuning arbitration (in-band retune via NCO vs hardware retune)
+- README update — daemon usage, config file, independent VFO feature
+- dist-workspace.toml — add `rtlsdr-daemon` binary to release targets
+- Phase 13: Configurables — runtime buffer sizes, gain modes, bias-T persistence
 
 @.claude/rules/hardware.md
 @.claude/rules/dsp.md
