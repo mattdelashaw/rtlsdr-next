@@ -18,7 +18,7 @@ impl TunerType {
             TunerType::FC0013 => 3,
             // FC2580 is 4 (not implemented)
             TunerType::R820T => 5,
-            TunerType::R828D => 6,
+            TunerType::R828D => 5, // Map R828D to 5 for client compatibility (Standard R82xx)
             TunerType::Unknown(id) => *id as u32,
         }
     }
@@ -216,5 +216,11 @@ pub trait Tuner: Send + Sync {
     /// Default: maps to lowest gain. Override in chip drivers with a known table.
     fn set_gain_by_index(&self, _idx: usize) -> Result<f32> {
         self.set_gain(0.0)
+    }
+
+    /// Get the supported gain steps in 10ths of a dB (e.g. 496 = 49.6 dB).
+    /// Used by rtl_tcp handshake to inform the client of the gain range.
+    fn get_gain_table(&self) -> Vec<i32> {
+        vec![0]
     }
 }

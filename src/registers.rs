@@ -32,6 +32,7 @@ pub mod demod {
     pub const P0_PAGE: u8 = 0;
     pub const P1_PAGE: u8 = 1;
     pub const P2_PAGE: u8 = 2;
+    pub const P0_AGC_CTL: u16 = 0x0019;
     pub const P1_IIC_REPEAT: u16 = 0x0001;
     pub const P1_IIC_REPEAT_ON: u8 = 0x18;
     pub const P1_IIC_REPEAT_OFF: u8 = 0x10;

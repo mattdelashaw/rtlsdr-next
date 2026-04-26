@@ -336,6 +336,16 @@ impl Driver {
         Ok(())
     }
 
+    pub fn set_agc(&self, on: bool) -> Result<()> {
+        let hw = self.device.as_ref();
+        // Bit 5 of P0_AGC_CTL enables/disables the RTL2832U demodulator AGC.
+        // 0x25 = ON, 0x05 = OFF (preserves other default bits)
+        let val = if on { 0x25 } else { 0x05 };
+        demod::write_reg_direct(hw, registers::demod::P0_PAGE, registers::demod::P0_AGC_CTL, val)?;
+        log::trace!("Demod AGC turned {}", if on { "ON" } else { "OFF" });
+        Ok(())
+    }
+
     fn corrected_xtal_hz(&self) -> u32 {
         let nominal = self.nominal_xtal as i64;
         let offset = (nominal * self.ppm as i64) / 1_000_000;

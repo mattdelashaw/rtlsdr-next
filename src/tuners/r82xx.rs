@@ -450,6 +450,10 @@ impl Tuner for R82xx {
         self.set_gain(GAIN_STEPS[clamped] as f32 / 10.0)
     }
 
+    fn get_gain_table(&self) -> Vec<i32> {
+        GAIN_STEPS.to_vec()
+    }
+
     fn set_input_path(&self, path: crate::tuner::InputPath) -> Result<()> {
         // R820T only has one input path, so this is a no-op for it.
         if self.tuner_type == TunerType::R820T {

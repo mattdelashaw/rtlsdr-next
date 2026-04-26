@@ -129,13 +129,24 @@ async fn handle_client(
     retune_tx:    mpsc::Sender<crate::daemon::RetuneRequest>,
     is_shared:    bool,
 ) -> anyhow::Result<()> {
-    // Send handshake header
-    let tuner_id = { let d = driver.lock().await; d.tuner_type.id() };
+    // 1. Send handshake header
+    let (tuner_id, gains) = { 
+        let d = driver.lock().await; 
+        (d.tuner_type.id(), d.tuner.get_gain_table())
+    };
+    
     let mut header = [0u8; 12];
     header[0..4].copy_from_slice(RTL_TCP_MAGIC);
     BigEndian::write_u32(&mut header[4..8],  tuner_id);
-    BigEndian::write_u32(&mut header[8..12], 29); // gain_count
+    BigEndian::write_u32(&mut header[8..12], gains.len() as u32);
     socket.write_all(&header).await?;
+
+    // 2. Send gain table (MANDATORY for protocol sync in SDR++, GQRX, etc.)
+    let mut gain_buf = vec![0u8; gains.len() * 4];
+    for (i, &gain) in gains.iter().enumerate() {
+        BigEndian::write_i32(&mut gain_buf[i * 4..(i + 1) * 4], gain);
+    }
+    socket.write_all(&gain_buf).await?;
     socket.set_nodelay(true)?;
 
     let (mut reader, mut writer) = socket.into_split();
@@ -178,15 +189,32 @@ async fn handle_client(
                     }
                 }
                 0x03 => {
-                    let cur = d.tuner.get_gain().unwrap_or(0.0);
-                    if arg == 0 || (arg == 1 && cur < 1.0) { let _ = d.tuner.set_gain(30.0); }
+                    // 0 = Auto Gain (Enable AGC), 1 = Manual Gain
+                    if arg == 0 {
+                        let _ = d.set_agc(true);
+                    } else {
+                        let _ = d.set_agc(false);
+                        // Default to a sensible manual gain if none set
+                        let cur = d.tuner.get_gain().unwrap_or(0.0);
+                        if cur < 1.0 { let _ = d.tuner.set_gain(30.0); }
+                    }
                 }
-                0x04 => { let _ = d.tuner.set_gain(arg as f32 / 10.0); }
+                0x04 => { 
+                    let _ = d.set_agc(false);
+                    let db = arg as f32 / 10.0;
+                    trace!("rtl_tcp: setting manual gain to {:.1} dB", db);
+                    let _ = d.tuner.set_gain(db); 
+                }
                 0x05 => { let _ = d.set_ppm(arg as i32); }
-                0x08..=0x0a => {}
+                0x08 => { let _ = d.set_agc(arg != 0); }
+                0x09..=0x0a => {}
                 0x0d => {} // SDR++ confirmation — silently ack
                 0x0e => { let _ = d.set_bias_t(arg != 0); }
-                0x13 => { let _ = d.tuner.set_gain_by_index(arg as usize); }
+                0x13 => { 
+                    let _ = d.set_agc(false);
+                    trace!("rtl_tcp: setting gain by index {}", arg);
+                    let _ = d.tuner.set_gain_by_index(arg as usize); 
+                }
                 _    => warn!("Unsupported rtl_tcp cmd: 0x{:02x}", cmd),
             }
         }
