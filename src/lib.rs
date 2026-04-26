@@ -243,8 +243,6 @@ impl Driver {
         let sync_val = if plan.spectral_inv { 0x05 } else { 0x01 };
         debug!("demod::write_reg_direct: P1_PAGE, 0x15, sync_val={:02x} (spectral_inv={})", sync_val, plan.spectral_inv);
         demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, sync_val)?;
-        // Hardware protocol mandate: Dummy read after every demod write.
-        let _ = hw.demod_read_reg(0x0a, 0x01);
 
         if let Some(band) = band {
             let span = band.read().span_hz;

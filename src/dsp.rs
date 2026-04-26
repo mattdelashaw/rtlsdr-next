@@ -809,17 +809,6 @@ impl Nco {
     /// Panics (debug only) if `iq` length is not even.
     pub fn mix(&mut self, iq: &mut [f32]) {
         debug_assert_eq!(iq.len() % 2, 0, "IQ buffer length must be even");
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            if std::arch::is_aarch64_feature_detected!("neon") {
-                unsafe {
-                    self.mix_neon(iq);
-                }
-                return;
-            }
-        }
-
         self.mix_scalar(iq);
     }
 
@@ -848,81 +837,6 @@ impl Nco {
         // Re-sync phase to prevent cumulative error in complex rotation.
         // Complex rotation is fast but slowly drifts in magnitude.
         // We wrap phase to [-π, π] to prevent f64 precision loss over time.
-        if self.phase > std::f64::consts::PI {
-            self.phase -= 2.0 * std::f64::consts::PI;
-        } else if self.phase < -std::f64::consts::PI {
-            self.phase += 2.0 * std::f64::consts::PI;
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[target_feature(enable = "neon")]
-    unsafe fn mix_neon(&mut self, iq: &mut [f32]) {
-        use std::arch::aarch64::*;
-
-        let mut cos_val = self.phase.cos();
-        let mut sin_val = self.phase.sin();
-        let rot_i = self.rotator_i;
-        let rot_q = self.rotator_q;
-
-        let mut i = 0;
-        // Process 2 complex samples (4 f32) at a time
-        while i + 3 < iq.len() {
-            let c0 = cos_val as f32;
-            let s0 = sin_val as f32;
-            
-            let next_cos0 = cos_val * rot_i - sin_val * rot_q;
-            let next_sin0 = cos_val * rot_q + sin_val * rot_i;
-            
-            let c1 = next_cos0 as f32;
-            let s1 = next_sin0 as f32;
-
-            // Vector: [I0, Q0, I1, Q1]
-            let v_iq = unsafe { vld1q_f32(iq.as_ptr().add(i)) };
-            
-            // IQ swizzled: [Q0, I0, Q1, I1]
-            let _v_qi = vrev64q_f32(v_iq);
-            
-            // Result lanes:
-            // lane 0: I0*c0 + Q0*s0  (I'0)
-            // lane 1: Q0*c0 - I0*s0  (Q'0)
-            // lane 2: I1*c1 + Q1*s1  (I'1)
-            // lane 3: Q1*c1 - I1*s1  (Q'1)
-            
-            let mut res = [0.0f32; 4];
-            res[0] = iq[i]   * c0 + iq[i+1] * s0;
-            res[1] = iq[i+1] * c0 - iq[i]   * s0;
-            res[2] = iq[i+2] * c1 + iq[i+3] * s1;
-            res[3] = iq[i+3] * c1 - iq[i+2] * s1;
-            
-            unsafe {
-                vst1q_f32(iq.as_mut_ptr().add(i), vld1q_f32(res.as_ptr()));
-            }
-
-            // Update complex oscillator for next pair
-            cos_val = next_cos0 * rot_i - next_sin0 * rot_q;
-            sin_val = next_cos0 * rot_q + next_sin0 * rot_i;
-            
-            i += 4;
-            self.phase += self.phase_inc * 2.0;
-        }
-
-        // Tail
-        while i < iq.len() {
-            let i_val = iq[i] as f64;
-            let q_val = iq[i+1] as f64;
-            iq[i] = (i_val * cos_val + q_val * sin_val) as f32;
-            iq[i+1] = (q_val * cos_val - i_val * sin_val) as f32;
-            
-            let next_cos = cos_val * rot_i - sin_val * rot_q;
-            let next_sin = cos_val * rot_q + sin_val * rot_i;
-            cos_val = next_cos;
-            sin_val = next_sin;
-            
-            i += 2;
-            self.phase += self.phase_inc;
-        }
-
         if self.phase > std::f64::consts::PI {
             self.phase -= 2.0 * std::f64::consts::PI;
         } else if self.phase < -std::f64::consts::PI {
