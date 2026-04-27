@@ -1,6 +1,6 @@
+use log::debug;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use log::debug;
 
 pub mod config;
 pub mod daemon;
@@ -148,13 +148,23 @@ impl Driver {
         // ── 5. Post-detection demod config for Low-IF / Zero-IF ───────────
         if matches!(tuner_type, TunerType::R820T | TunerType::R828D) || info.is_v4 {
             demod::set_tuner_low_if(hw)?;
-            demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
+            demod::write_reg_direct(
+                hw,
+                registers::demod::P1_PAGE,
+                registers::demod::P1_DDC_SYNC,
+                registers::demod::P1_DDC_SYNC_NORMAL,
+            )?;
         } else if matches!(
             tuner_type,
             TunerType::E4000 | TunerType::FC0012 | TunerType::FC0013
         ) {
             demod::set_tuner_zero_if(hw)?;
-            demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
+            demod::write_reg_direct(
+                hw,
+                registers::demod::P1_PAGE,
+                registers::demod::P1_DDC_SYNC,
+                registers::demod::P1_DDC_SYNC_NORMAL,
+            )?;
         }
 
         // ── 6. Demodulator sync ────────────────────────────────────────────
@@ -171,7 +181,12 @@ impl Driver {
         demod::reset_demod(hw)?;
         demod::set_if_freq_xtal(hw, initial_if, xtal_hz as u32)?;
         demod::set_sample_rate_xtal(hw, DEFAULT_SAMPLE_RATE, xtal_hz as u32)?;
-        demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
+        demod::write_reg_direct(
+            hw,
+            registers::demod::P1_PAGE,
+            registers::demod::P1_DDC_SYNC,
+            registers::demod::P1_DDC_SYNC_NORMAL,
+        )?;
 
         demod::start_streaming(hw)?;
 
@@ -192,7 +207,11 @@ impl Driver {
         })
     }
 
-    pub fn set_frequency(&mut self, hz: u64, band: Option<&std::sync::Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>>) -> Result<u64> {
+    pub fn set_frequency(
+        &mut self,
+        hz: u64,
+        band: Option<&std::sync::Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>>,
+    ) -> Result<u64> {
         let _t = std::time::Instant::now();
         let plan = self.orchestrator.plan_tuning(hz);
 
@@ -239,10 +258,16 @@ impl Driver {
 
         // The RTL2832U demodulator register 0x15 controls the DDC sync and spectral inversion.
         // For Low-IF (R828D/R820T), we must explicitly write the correct mode.
-        // Sync: 0x01 = normal, 0x05 = inverted.
-        let sync_val = if plan.spectral_inv { 0x05 } else { 0x01 };
-        debug!("demod::write_reg_direct: P1_PAGE, 0x15, sync_val={:02x} (spectral_inv={})", sync_val, plan.spectral_inv);
-        demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, sync_val)?;
+        let sync_val = if plan.spectral_inv {
+            registers::demod::P1_DDC_SYNC_INVERT
+        } else {
+            registers::demod::P1_DDC_SYNC_NORMAL
+        };
+        debug!(
+            "demod::write_reg_direct: P1_PAGE, P1_DDC_SYNC, sync_val={:02x} (spectral_inv={})",
+            sync_val, plan.spectral_inv
+        );
+        demod::write_reg_direct(hw, registers::demod::P1_PAGE, registers::demod::P1_DDC_SYNC, sync_val)?;
 
         if let Some(band) = band {
             let span = band.read().span_hz;
@@ -265,7 +290,8 @@ impl Driver {
 
         // Final flush to clear any remaining transient samples after tuning
         let _ = self.flush_tx.send(());
-        Ok(hz)    }
+        Ok(hz)
+    }
 
     fn apply_input_path(&self, _freq_hz: u64, path: InputPath) -> Result<()> {
         let hw = self.device.as_ref();
@@ -294,7 +320,11 @@ impl Driver {
 
         let current_if = self.tuner.get_if_freq();
         let if_hz = if current_if > 0 {
-            if rate_hz < 2_500_000 { 2_300_000 } else { 3_570_000 }
+            if rate_hz < 2_500_000 {
+                2_300_000
+            } else {
+                3_570_000
+            }
         } else {
             0
         };
@@ -305,7 +335,12 @@ impl Driver {
         demod::reset_demod(hw)?;
         demod::set_sample_rate_xtal(hw, rate_hz, xtal)?;
         demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
-        demod::write_reg_direct(hw, registers::demod::P1_PAGE, 0x15, 0x01)?;
+        demod::write_reg_direct(
+            hw,
+            registers::demod::P1_PAGE,
+            registers::demod::P1_DDC_SYNC,
+            registers::demod::P1_DDC_SYNC_NORMAL,
+        )?;
 
         self.sample_rate = rate_hz;
         log::info!(
@@ -341,7 +376,12 @@ impl Driver {
         // Bit 5 of P0_AGC_CTL enables/disables the RTL2832U demodulator AGC.
         // 0x25 = ON, 0x05 = OFF (preserves other default bits)
         let val = if on { 0x25 } else { 0x05 };
-        demod::write_reg_direct(hw, registers::demod::P0_PAGE, registers::demod::P0_AGC_CTL, val)?;
+        demod::write_reg_direct(
+            hw,
+            registers::demod::P0_PAGE,
+            registers::demod::P0_AGC_CTL,
+            val,
+        )?;
         log::trace!("Demod AGC turned {}", if on { "ON" } else { "OFF" });
         Ok(())
     }
@@ -350,7 +390,10 @@ impl Driver {
         let nominal = self.nominal_xtal as i64;
         let offset = (nominal * self.ppm as i64) / 1_000_000;
         let corrected = (nominal + offset) as u32;
-        debug!("corrected_xtal_hz: nominal={}, ppm={}, corrected={}", nominal, self.ppm, corrected);
+        debug!(
+            "corrected_xtal_hz: nominal={}, ppm={}, corrected={}",
+            nominal, self.ppm, corrected
+        );
         corrected
     }
 
@@ -373,8 +416,13 @@ impl Driver {
         tokio::spawn(async move {
             while let Some(res) = stream.next().await {
                 match res {
-                    Ok(samples) => { let _ = tx.send(Arc::new(samples.to_vec())); }
-                    Err(e) => { log::error!("Stream error: {:?}", e); break; }
+                    Ok(samples) => {
+                        let _ = tx.send(Arc::new(samples.to_vec()));
+                    }
+                    Err(e) => {
+                        log::error!("Stream error: {:?}", e);
+                        break;
+                    }
                 }
             }
         });

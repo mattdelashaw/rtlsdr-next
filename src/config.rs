@@ -208,19 +208,45 @@ impl DaemonConfig {
 
     /// Apply CLI overrides — any `Some` value wins unconditionally.
     fn apply_overrides(&mut self, o: &CliOverrides) {
-        if let Some(v) = o.device_index  { self.hardware.device_index  = v; }
-        if let Some(v) = o.sample_rate   { self.hardware.sample_rate   = v; }
-        if let Some(v) = o.initial_freq  { self.hardware.initial_freq  = v; }
-        if let Some(v) = o.initial_gain  { self.hardware.initial_gain  = v; }
-        if let Some(v) = o.ppm           { self.hardware.ppm           = v; }
-        if let Some(v) = o.bias_t        { self.hardware.bias_t        = v; }
-        if let Some(v) = o.num_buffers   { self.stream.num_buffers     = v; }
-        if let Some(v) = o.buffer_size   { self.stream.buffer_size     = v; }
-        if let Some(v) = o.rtl_tcp.clone()      { self.servers.rtl_tcp      = Some(v); }
-        if let Some(v) = o.websdr.clone()        { self.servers.websdr       = Some(v); }
-        if let Some(v) = o.unix_socket.clone()   { self.servers.unix_socket  = Some(v); }
-        if let Some(v) = o.cert.clone()          { self.tls.cert             = Some(v); }
-        if let Some(v) = o.key.clone()           { self.tls.key              = Some(v); }
+        if let Some(v) = o.device_index {
+            self.hardware.device_index = v;
+        }
+        if let Some(v) = o.sample_rate {
+            self.hardware.sample_rate = v;
+        }
+        if let Some(v) = o.initial_freq {
+            self.hardware.initial_freq = v;
+        }
+        if let Some(v) = o.initial_gain {
+            self.hardware.initial_gain = v;
+        }
+        if let Some(v) = o.ppm {
+            self.hardware.ppm = v;
+        }
+        if let Some(v) = o.bias_t {
+            self.hardware.bias_t = v;
+        }
+        if let Some(v) = o.num_buffers {
+            self.stream.num_buffers = v;
+        }
+        if let Some(v) = o.buffer_size {
+            self.stream.buffer_size = v;
+        }
+        if let Some(v) = o.rtl_tcp.clone() {
+            self.servers.rtl_tcp = Some(v);
+        }
+        if let Some(v) = o.websdr.clone() {
+            self.servers.websdr = Some(v);
+        }
+        if let Some(v) = o.unix_socket.clone() {
+            self.servers.unix_socket = Some(v);
+        }
+        if let Some(v) = o.cert.clone() {
+            self.tls.cert = Some(v);
+        }
+        if let Some(v) = o.key.clone() {
+            self.tls.key = Some(v);
+        }
     }
 
     /// Validate the fully-merged config and return human-readable errors.
@@ -241,7 +267,7 @@ impl DaemonConfig {
             anyhow::bail!("stream.num_buffers must be >= 1");
         }
 
-        if self.stream.buffer_size % 512 != 0 {
+        if !self.stream.buffer_size.is_multiple_of(512) {
             anyhow::bail!(
                 "stream.buffer_size {} is not a multiple of 512 (USB packet size)",
                 self.stream.buffer_size
@@ -284,12 +310,13 @@ mod tests {
     #[test]
     fn test_defaults_parse() {
         // The compiled-in default TOML must parse cleanly on its own.
-        let mut cfg: DaemonConfig = toml::from_str(DEFAULT_TOML)
-            .expect("default TOML must parse cleanly");
-        
+        let mut cfg: DaemonConfig =
+            toml::from_str(DEFAULT_TOML).expect("default TOML must parse cleanly");
+
         // Temporarily enable a server for validation, as default has none.
         cfg.servers.rtl_tcp = Some("0.0.0.0:1234".to_string());
-        cfg.validate().expect("default config with temp server should validate");
+        cfg.validate()
+            .expect("default config with temp server should validate");
 
         assert_eq!(cfg.hardware.device_index, 0);
         assert_eq!(cfg.hardware.sample_rate, 1_536_000);

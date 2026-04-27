@@ -135,20 +135,34 @@ impl Decimator {
         {
             if std::arch::is_aarch64_feature_detected!("neon") {
                 unsafe {
-                    fir_decimate_neon(&self.extended, &self.taps, self.factor, &mut self.phase, output);
+                    fir_decimate_neon(
+                        &self.extended,
+                        &self.taps,
+                        self.factor,
+                        &mut self.phase,
+                        output,
+                    );
                 }
                 // Update history
                 let new_history_start = self.extended.len() - overlap;
-                self.history.copy_from_slice(&self.extended[new_history_start..]);
+                self.history
+                    .copy_from_slice(&self.extended[new_history_start..]);
                 return;
             }
         }
 
-        fir_decimate_scalar(&self.extended, &self.taps, self.factor, &mut self.phase, output);
+        fir_decimate_scalar(
+            &self.extended,
+            &self.taps,
+            self.factor,
+            &mut self.phase,
+            output,
+        );
 
         // Update history for next block
         let new_history_start = self.extended.len() - overlap;
-        self.history.copy_from_slice(&self.extended[new_history_start..]);
+        self.history
+            .copy_from_slice(&self.extended[new_history_start..]);
     }
 
     /// Process a block of samples and return a new Vec.
@@ -592,7 +606,7 @@ impl HilbertFilter {
         for i in 0..input.len() {
             let mut acc = 0.0f32;
             let window = &self.extended[i..i + taps_len];
-            
+
             // Only process odd-indexed taps (relative to start) because even ones are zero.
             // Note: Since mid is even (e.g. 32 for 65 taps), and n = idx - mid,
             // n is odd when idx is odd.
@@ -603,7 +617,8 @@ impl HilbertFilter {
         }
 
         let new_history_start = self.extended.len() - overlap;
-        self.history.copy_from_slice(&self.extended[new_history_start..]);
+        self.history
+            .copy_from_slice(&self.extended[new_history_start..]);
     }
 }
 
@@ -649,7 +664,8 @@ impl SsbDemodulator {
         }
 
         // 1. Transform Q branch (90 deg shift)
-        self.hilbert.process_into(&self.q_branch, &mut self.q_shifted);
+        self.hilbert
+            .process_into(&self.q_branch, &mut self.q_shifted);
 
         // 2. Combine with delayed I branch
         let _delay = self.i_history.len();
@@ -775,7 +791,7 @@ impl Nco {
     /// Create a new NCO.
     ///
     /// * `freq_hz`        — frequency to shift the spectrum by, in Hz.
-    ///                      Positive shifts signal at `center + freq_hz` to baseband.
+    ///   Positive shifts signal at `center + freq_hz` to baseband.
     /// * `sample_rate_hz` — hardware sample rate in Hz.
     pub fn new(freq_hz: f64, sample_rate_hz: f64) -> Self {
         let phase_inc = 2.0 * std::f64::consts::PI * freq_hz / sample_rate_hz;
@@ -1222,8 +1238,10 @@ mod tests {
         let signal: Vec<f32> = (0..n * 2)
             .flat_map(|k| {
                 let t = k as f64 / fs;
-                [(2.0 * std::f64::consts::PI * 50_000.0 * t).cos() as f32,
-                 (2.0 * std::f64::consts::PI * 50_000.0 * t).sin() as f32]
+                [
+                    (2.0 * std::f64::consts::PI * 50_000.0 * t).cos() as f32,
+                    (2.0 * std::f64::consts::PI * 50_000.0 * t).sin() as f32,
+                ]
             })
             .collect();
 
@@ -1235,14 +1253,16 @@ mod tests {
         // Two blocks
         let mut nco_two = Nco::new(shift, fs);
         let mut two = signal.clone();
-        nco_two.mix(&mut two[..n * 2]);       // first half (all I/Q pairs)
-        nco_two.mix(&mut two[n * 2..]);       // second half — phase must continue
+        nco_two.mix(&mut two[..n * 2]); // first half (all I/Q pairs)
+        nco_two.mix(&mut two[n * 2..]); // second half — phase must continue
 
         for (i, (a, b)) in one.iter().zip(two.iter()).enumerate() {
             assert!(
                 (a - b).abs() < 1e-4,
                 "Phase discontinuity at sample {}: one={} two={}",
-                i, a, b
+                i,
+                a,
+                b
             );
         }
     }

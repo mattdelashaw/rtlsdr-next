@@ -44,7 +44,6 @@ struct Cli {
     config: Option<PathBuf>,
 
     // ── Hardware ──────────────────────────────────────────────────────────────
-
     /// USB device index (0 = first dongle found).
     #[arg(long, value_name = "INDEX")]
     device: Option<u32>,
@@ -70,7 +69,6 @@ struct Cli {
     bias_t: bool,
 
     // ── Stream ────────────────────────────────────────────────────────────────
-
     /// Number of USB transfer buffers in the pool.
     #[arg(long, value_name = "N")]
     buffers: Option<usize>,
@@ -80,7 +78,6 @@ struct Cli {
     buffer_size: Option<usize>,
 
     // ── Servers ───────────────────────────────────────────────────────────────
-
     /// Enable rtl_tcp server. Accepts SDR++, GQRX, OpenWebRX+.
     /// Example: 0.0.0.0:1234
     #[arg(long, value_name = "ADDR")]
@@ -97,7 +94,6 @@ struct Cli {
     unix: Option<String>,
 
     // ── TLS (WebSDR wss://) ───────────────────────────────────────────────────
-
     /// Path to TLS certificate PEM file. Enables wss:// on the WebSDR server.
     /// Must be paired with --key.
     #[arg(long, value_name = "PATH")]
@@ -108,7 +104,6 @@ struct Cli {
     key: Option<PathBuf>,
 
     // ── Logging ───────────────────────────────────────────────────────────────
-
     /// Log level: error | warn | info | debug | trace
     #[arg(long, value_name = "LEVEL", default_value = "info")]
     log_level: String,
@@ -122,19 +117,19 @@ impl Cli {
     fn into_overrides(self) -> (Option<PathBuf>, CliOverrides) {
         let bias_t = if self.bias_t { Some(true) } else { None };
         let overrides = CliOverrides {
-            device_index:  self.device,
-            sample_rate:   self.sample_rate,
-            initial_freq:  self.freq,
-            initial_gain:  self.gain,
-            ppm:           self.ppm,
+            device_index: self.device,
+            sample_rate: self.sample_rate,
+            initial_freq: self.freq,
+            initial_gain: self.gain,
+            ppm: self.ppm,
             bias_t,
-            num_buffers:   self.buffers,
-            buffer_size:   self.buffer_size,
-            rtl_tcp:       self.rtl_tcp,
-            websdr:        self.websdr,
-            unix_socket:   self.unix,
-            cert:          self.cert,
-            key:           self.key,
+            num_buffers: self.buffers,
+            buffer_size: self.buffer_size,
+            rtl_tcp: self.rtl_tcp,
+            websdr: self.websdr,
+            unix_socket: self.unix,
+            cert: self.cert,
+            key: self.key,
         };
         (self.config, overrides)
     }
@@ -148,10 +143,7 @@ async fn main() -> Result<()> {
     let log_level = cli.log_level.clone();
 
     // Initialise logging before anything else so early errors are visible.
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(&log_level),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&log_level)).init();
 
     let (config_path, overrides) = cli.into_overrides();
 
@@ -163,9 +155,7 @@ async fn main() -> Result<()> {
 
     info!(
         "rtlsdr-next daemon starting (device {}, {} Hz, {:.1} dB gain)",
-        cfg.hardware.device_index,
-        cfg.hardware.sample_rate,
-        cfg.hardware.initial_gain,
+        cfg.hardware.device_index, cfg.hardware.sample_rate, cfg.hardware.initial_gain,
     );
 
     if let Some(addr) = &cfg.servers.rtl_tcp {
@@ -175,7 +165,11 @@ async fn main() -> Result<()> {
         info!(
             "WebSDR    : {} ({})",
             addr,
-            if cfg.tls.pair().is_some() { "wss://" } else { "ws://" }
+            if cfg.tls.pair().is_some() {
+                "wss://"
+            } else {
+                "ws://"
+            }
         );
     }
     if let Some(path) = &cfg.servers.unix_socket {

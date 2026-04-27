@@ -48,6 +48,11 @@ pub mod demod {
     pub const P2_RESAMPLE_M: u16 = 0x0023;
     pub const P2_RESAMPLE_L: u16 = 0x0024;
     pub const P2_RESAMPLE_LSB: u16 = 0x0025;
+
+    // DDC Sync and Spectral Inversion (page 1)
+    pub const P1_DDC_SYNC: u16 = 0x0015;
+    pub const P1_DDC_SYNC_NORMAL: u8 = 0x01;
+    pub const P1_DDC_SYNC_INVERT: u8 = 0x05;
 }
 
 pub mod tuner_ids {

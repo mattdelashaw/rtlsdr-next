@@ -56,7 +56,7 @@ pub fn init_baseband(hw: &dyn HardwareInterface) -> Result<()> {
         demod::P1_SOFT_RESET_OFF,
     )?;
 
-    hw.demod_write_reg(demod::P1_PAGE, 0x15, 0x00)?;
+    hw.demod_write_reg(demod::P1_PAGE, demod::P1_DDC_SYNC, 0x00)?;
     hw.demod_write_reg16(demod::P1_PAGE, 0x16, 0x0000)?;
 
     for i in 0..6u16 {

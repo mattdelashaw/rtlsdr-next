@@ -229,7 +229,7 @@ impl R82xx {
         }
 
         let vco_freq = lo_freq_hz * mix_div;
-        
+
         // R828D VCO power ref = 1, R820T = 2.
         let vco_power_ref: u64 = match self.tuner_type {
             TunerType::R828D => 1,
@@ -245,7 +245,7 @@ impl R82xx {
 
         let ni = ((nint - 13) / 4) as u8;
         let si = (nint as u8).wrapping_sub(4u8.wrapping_mul(ni).wrapping_add(13));
-        
+
         let pw_sdm: u8 = if vco_fra == 0 { 0x08 } else { 0x00 };
         let mut sdm: u32 = 0;
         let mut n_sdm: u32 = 2;
@@ -262,9 +262,12 @@ impl R82xx {
 
         // ── Pass 1: Apply initial registers ───────────────────────────────
         self.write_reg_mask_raw(0x10, div_num << 5, 0xe0)?;
-        self.device.i2c_write_raw(self.i2c_addr, &[0x14, ni | (si << 6)])?;
-        self.device.i2c_write_raw(self.i2c_addr, &[0x16, (sdm >> 8) as u8])?;
-        self.device.i2c_write_raw(self.i2c_addr, &[0x15, (sdm & 0xff) as u8])?;
+        self.device
+            .i2c_write_raw(self.i2c_addr, &[0x14, ni | (si << 6)])?;
+        self.device
+            .i2c_write_raw(self.i2c_addr, &[0x16, (sdm >> 8) as u8])?;
+        self.device
+            .i2c_write_raw(self.i2c_addr, &[0x15, (sdm & 0xff) as u8])?;
         self.write_reg_mask_raw(0x12, pw_sdm, 0x08)?;
 
         // ── Settle & Probe ────────────────────────────────────────────────

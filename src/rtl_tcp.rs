@@ -11,26 +11,31 @@ use tokio_util::sync::CancellationToken;
 const RTL_TCP_MAGIC: &[u8] = b"RTL0";
 
 pub struct TcpServer {
-    _driver:      Arc<Mutex<Driver>>,
-    _addr:        String,
+    _driver: Arc<Mutex<Driver>>,
+    _addr: String,
     cancel_token: CancellationToken,
 }
 
 impl TcpServer {
     /// Standalone entry point — owns the `Driver`, runs its own broadcast pump.
     pub async fn start(driver: Driver, addr: &str) -> Result<Self> {
-        let driver       = Arc::new(Mutex::new(driver));
+        let driver = Arc::new(Mutex::new(driver));
         let cancel_token = CancellationToken::new();
 
         let (tx, _) = broadcast::channel::<Arc<Vec<u8>>>(64);
         {
             let pump_driver = driver.clone();
-            let pump_tx     = tx.clone();
-            let pump_token  = cancel_token.clone();
+            let pump_tx = tx.clone();
+            let pump_token = cancel_token.clone();
             tokio::spawn(async move {
                 loop {
-                    if pump_token.is_cancelled() { break; }
-                    let mut stream = { let d = pump_driver.lock().await; d.stream() };
+                    if pump_token.is_cancelled() {
+                        break;
+                    }
+                    let mut stream = {
+                        let d = pump_driver.lock().await;
+                        d.stream()
+                    };
                     loop {
                         tokio::select! {
                             _ = pump_token.cancelled() => break,
@@ -41,23 +46,40 @@ impl TcpServer {
                             }
                         }
                     }
-                    if pump_token.is_cancelled() { break; }
+                    if pump_token.is_cancelled() {
+                        break;
+                    }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
                 info!("rtl_tcp stream pump stopped");
             });
         }
 
-        let initial_freq = { let d = driver.lock().await; d.frequency };
+        let initial_freq = {
+            let d = driver.lock().await;
+            d.frequency
+        };
         let band = Arc::new(parking_lot::RwLock::new(crate::daemon::HardwareBand {
             center_hz: initial_freq,
-            span_hz:   2_048_000, // Default for standalone
+            span_hz: 2_048_000, // Default for standalone
             spectral_inv: false,
         }));
         let (retune_tx, _retune_rx) = mpsc::channel::<crate::daemon::RetuneRequest>(8);
 
-        let server = Self { _driver: driver.clone(), _addr: addr.to_string(), cancel_token: cancel_token.clone() };
-        tokio::spawn(run_listener(driver, tx, band, retune_tx, addr.to_string(), cancel_token, false));
+        let server = Self {
+            _driver: driver.clone(),
+            _addr: addr.to_string(),
+            cancel_token: cancel_token.clone(),
+        };
+        tokio::spawn(run_listener(
+            driver,
+            tx,
+            band,
+            retune_tx,
+            addr.to_string(),
+            cancel_token,
+            false,
+        ));
         Ok(server)
     }
 
@@ -66,29 +88,40 @@ impl TcpServer {
     /// Each incoming TCP client calls `tx.subscribe()` to get its own fresh
     /// receiver. No relay task — one less async hop, one less place to lag.
     pub async fn start_shared(
-        driver:    Arc<Mutex<Driver>>,
+        driver: Arc<Mutex<Driver>>,
         sample_tx: broadcast::Sender<Arc<Vec<u8>>>,
-        band:      Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
+        band: Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
         retune_tx: mpsc::Sender<crate::daemon::RetuneRequest>,
-        addr:      &str,
+        addr: &str,
     ) -> Result<()> {
         let cancel_token = CancellationToken::new();
-        run_listener(driver, sample_tx, band, retune_tx, addr.to_string(), cancel_token, true).await
+        run_listener(
+            driver,
+            sample_tx,
+            band,
+            retune_tx,
+            addr.to_string(),
+            cancel_token,
+            true,
+        )
+        .await
     }
 
-    pub fn stop(&self) { self.cancel_token.cancel(); }
+    pub fn stop(&self) {
+        self.cancel_token.cancel();
+    }
 }
 
 // ── Listener ──────────────────────────────────────────────────────────────────
 
 async fn run_listener(
-    driver:       Arc<Mutex<Driver>>,
-    tx:           broadcast::Sender<Arc<Vec<u8>>>,
-    band:         Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
-    retune_tx:    mpsc::Sender<crate::daemon::RetuneRequest>,
-    addr:         String,
+    driver: Arc<Mutex<Driver>>,
+    tx: broadcast::Sender<Arc<Vec<u8>>>,
+    band: Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
+    retune_tx: mpsc::Sender<crate::daemon::RetuneRequest>,
+    addr: String,
     cancel_token: CancellationToken,
-    is_shared:    bool,
+    is_shared: bool,
 ) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     info!("rtl_tcp listening on {}", addr);
@@ -121,23 +154,23 @@ async fn run_listener(
 // ── Client handler ────────────────────────────────────────────────────────────
 
 async fn handle_client(
-    driver:       Arc<Mutex<Driver>>,
-    mut socket:   tokio::net::TcpStream,
+    driver: Arc<Mutex<Driver>>,
+    mut socket: tokio::net::TcpStream,
     mut client_rx: broadcast::Receiver<Arc<Vec<u8>>>,
     cancel_token: CancellationToken,
-    _band:        Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
-    retune_tx:    mpsc::Sender<crate::daemon::RetuneRequest>,
-    is_shared:    bool,
+    _band: Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
+    retune_tx: mpsc::Sender<crate::daemon::RetuneRequest>,
+    is_shared: bool,
 ) -> anyhow::Result<()> {
     // 1. Send handshake header
-    let (tuner_id, gains) = { 
-        let d = driver.lock().await; 
+    let (tuner_id, gains) = {
+        let d = driver.lock().await;
         (d.tuner_type.id(), d.tuner.get_gain_table())
     };
-    
+
     let mut header = [0u8; 12];
     header[0..4].copy_from_slice(RTL_TCP_MAGIC);
-    BigEndian::write_u32(&mut header[4..8],  tuner_id);
+    BigEndian::write_u32(&mut header[4..8], tuner_id);
     BigEndian::write_u32(&mut header[8..12], gains.len() as u32);
     socket.write_all(&header).await?;
 
@@ -176,14 +209,23 @@ async fn handle_client(
             match cmd {
                 0x01 => {
                     // Try to use the shared retune channel first (for daemon mode sync)
-                    if retune_tx.send(crate::daemon::RetuneRequest { center_hz: arg as u64 }).await.is_err() {
+                    if retune_tx
+                        .send(crate::daemon::RetuneRequest {
+                            center_hz: arg as u64,
+                        })
+                        .await
+                        .is_err()
+                    {
                         // Fallback to direct tuning (for standalone mode)
                         let _ = d.set_frequency(arg as u64, None);
                     }
                 }
-                0x02 => { 
+                0x02 => {
                     if is_shared {
-                        warn!("rtl_tcp: ignoring sample rate change request to {} Hz (daemon mode)", arg);
+                        warn!(
+                            "rtl_tcp: ignoring sample rate change request to {} Hz (daemon mode)",
+                            arg
+                        );
                     } else {
                         let _ = d.set_sample_rate(arg);
                     }
@@ -196,26 +238,34 @@ async fn handle_client(
                         let _ = d.set_agc(false);
                         // Default to a sensible manual gain if none set
                         let cur = d.tuner.get_gain().unwrap_or(0.0);
-                        if cur < 1.0 { let _ = d.tuner.set_gain(30.0); }
+                        if cur < 1.0 {
+                            let _ = d.tuner.set_gain(30.0);
+                        }
                     }
                 }
-                0x04 => { 
+                0x04 => {
                     let _ = d.set_agc(false);
                     let db = arg as f32 / 10.0;
                     trace!("rtl_tcp: setting manual gain to {:.1} dB", db);
-                    let _ = d.tuner.set_gain(db); 
+                    let _ = d.tuner.set_gain(db);
                 }
-                0x05 => { let _ = d.set_ppm(arg as i32); }
-                0x08 => { let _ = d.set_agc(arg != 0); }
+                0x05 => {
+                    let _ = d.set_ppm(arg as i32);
+                }
+                0x08 => {
+                    let _ = d.set_agc(arg != 0);
+                }
                 0x09..=0x0a => {}
                 0x0d => {} // SDR++ confirmation — silently ack
-                0x0e => { let _ = d.set_bias_t(arg != 0); }
-                0x13 => { 
+                0x0e => {
+                    let _ = d.set_bias_t(arg != 0);
+                }
+                0x13 => {
                     let _ = d.set_agc(false);
                     trace!("rtl_tcp: setting gain by index {}", arg);
-                    let _ = d.tuner.set_gain_by_index(arg as usize); 
+                    let _ = d.tuner.set_gain_by_index(arg as usize);
                 }
-                _    => warn!("Unsupported rtl_tcp cmd: 0x{:02x}", cmd),
+                _ => warn!("Unsupported rtl_tcp cmd: 0x{:02x}", cmd),
             }
         }
         #[allow(unreachable_code)]

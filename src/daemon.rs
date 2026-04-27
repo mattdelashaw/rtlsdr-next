@@ -13,8 +13,8 @@ use parking_lot::RwLock;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::DaemonConfig;
 use crate::Driver;
+use crate::config::DaemonConfig;
 
 // ── HardwareBand ──────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ use crate::Driver;
 #[derive(Clone, Copy, Debug)]
 pub struct HardwareBand {
     pub center_hz: u64,
-    pub span_hz:   u32,
+    pub span_hz: u32,
     pub spectral_inv: bool,
 }
 
@@ -54,11 +54,11 @@ pub struct RetuneRequest {
 // ── Daemon ────────────────────────────────────────────────────────────────────
 
 pub struct Daemon {
-    driver:    Arc<Mutex<Driver>>,
+    driver: Arc<Mutex<Driver>>,
     sample_tx: broadcast::Sender<Arc<Vec<u8>>>,
-    pub band:      Arc<RwLock<HardwareBand>>,
+    pub band: Arc<RwLock<HardwareBand>>,
     pub retune_tx: mpsc::Sender<RetuneRequest>,
-    cancel:    CancellationToken,
+    cancel: CancellationToken,
 }
 
 impl Daemon {
@@ -72,14 +72,18 @@ impl Daemon {
         driver.set_sample_rate(cfg.hardware.sample_rate)?;
         driver.set_frequency(cfg.hardware.initial_freq, None)?;
         driver.tuner.set_gain(cfg.hardware.initial_gain)?;
-        if cfg.hardware.ppm != 0 { driver.set_ppm(cfg.hardware.ppm)?; }
-        if cfg.hardware.bias_t { driver.set_bias_t(true)?; }
+        if cfg.hardware.ppm != 0 {
+            driver.set_ppm(cfg.hardware.ppm)?;
+        }
+        if cfg.hardware.bias_t {
+            driver.set_bias_t(true)?;
+        }
         driver.stream_config = cfg.stream.clone().into();
 
         let plan = driver.orchestrator.plan_tuning(cfg.hardware.initial_freq);
         let band = Arc::new(RwLock::new(HardwareBand {
             center_hz: cfg.hardware.initial_freq,
-            span_hz:   cfg.hardware.sample_rate,
+            span_hz: cfg.hardware.sample_rate,
             spectral_inv: plan.spectral_inv,
         }));
 
@@ -97,7 +101,13 @@ impl Daemon {
             run_pump(driver_clone, tx_clone, band_clone, retune_rx, cancel_clone).await;
         });
 
-        Ok(Self { driver, band, retune_tx, sample_tx, cancel })
+        Ok(Self {
+            driver,
+            band,
+            retune_tx,
+            sample_tx,
+            cancel,
+        })
     }
 
     /// Spawn all configured servers and block until shutdown.
@@ -106,14 +116,17 @@ impl Daemon {
 
         // rtl_tcp — pass Sender clone, not a Receiver
         if let Some(addr) = &cfg.servers.rtl_tcp {
-            let driver    = self.driver.clone();
-            let tx        = self.sample_tx.clone();
-            let band      = self.band.clone();
+            let driver = self.driver.clone();
+            let tx = self.sample_tx.clone();
+            let band = self.band.clone();
             let retune_tx = self.retune_tx.clone();
-            let addr      = addr.clone();
+            let addr = addr.clone();
             info!("rtl_tcp spawned on {}", addr);
             join_set.spawn(async move {
-                if let Err(e) = crate::rtl_tcp::TcpServer::start_shared(driver, tx, band, retune_tx, &addr).await {
+                if let Err(e) =
+                    crate::rtl_tcp::TcpServer::start_shared(driver, tx, band, retune_tx, &addr)
+                        .await
+                {
                     error!("rtl_tcp error: {:?}", e);
                 }
             });
@@ -121,18 +134,26 @@ impl Daemon {
 
         // WebSDR — pass Sender clone, not a Receiver
         if let Some(addr) = &cfg.servers.websdr {
-            let driver      = self.driver.clone();
-            let tx          = self.sample_tx.clone();
-            let band        = self.band.clone();
-            let retune_tx   = self.retune_tx.clone();
-            let addr        = addr.clone();
-            let tls         = cfg.tls.pair();
+            let driver = self.driver.clone();
+            let tx = self.sample_tx.clone();
+            let band = self.band.clone();
+            let retune_tx = self.retune_tx.clone();
+            let addr = addr.clone();
+            let tls = cfg.tls.pair();
             let sample_rate = cfg.hardware.sample_rate;
             info!("WebSDR spawned on {}", addr);
             join_set.spawn(async move {
                 if let Err(e) = crate::websdr::WebSdrServer::start_shared(
-                    driver, tx, band, retune_tx, sample_rate, &addr, tls,
-                ).await {
+                    driver,
+                    tx,
+                    band,
+                    retune_tx,
+                    sample_rate,
+                    &addr,
+                    tls,
+                )
+                .await
+                {
                     error!("WebSDR error: {:?}", e);
                 }
             });
@@ -141,7 +162,7 @@ impl Daemon {
         #[cfg(unix)]
         if let Some(path) = &cfg.servers.unix_socket {
             // SharingServer still uses a Receiver — leave as-is for now.
-            let rx   = self.sample_tx.subscribe();
+            let rx = self.sample_tx.subscribe();
             let path = std::path::PathBuf::from(path);
             join_set.spawn(async move {
                 match crate::server::SharingServer::start(&path, rx).await {
@@ -187,15 +208,18 @@ impl Daemon {
 // ── Broadcast pump ────────────────────────────────────────────────────────────
 
 async fn run_pump(
-    driver:      Arc<Mutex<Driver>>,
-    sample_tx:   broadcast::Sender<Arc<Vec<u8>>>,
-    band:        Arc<RwLock<HardwareBand>>,
+    driver: Arc<Mutex<Driver>>,
+    sample_tx: broadcast::Sender<Arc<Vec<u8>>>,
+    band: Arc<RwLock<HardwareBand>>,
     mut retune_rx: mpsc::Receiver<RetuneRequest>,
-    cancel:      CancellationToken,
+    cancel: CancellationToken,
 ) {
     info!("Broadcast pump started.");
 
-    let mut stream = { let d = driver.lock().await; d.stream() };
+    let mut stream = {
+        let d = driver.lock().await;
+        d.stream()
+    };
 
     loop {
         tokio::select! {
@@ -221,16 +245,16 @@ async fn run_pump(
                 match result {
                     Ok(logical_hz) => {
                         let span = band.read().span_hz;
-                        *band.write() = HardwareBand { 
-                            center_hz: logical_hz, 
+                        *band.write() = HardwareBand {
+                            center_hz: logical_hz,
                             span_hz: span,
                             spectral_inv: plan.spectral_inv,
                         };
                         info!("Retuned to {} Hz (Inv: {})", logical_hz, plan.spectral_inv);
-                        
+
                         // Send flush signal through broadcast to clear client pipelines
                         let _ = sample_tx.send(Arc::new(Vec::new()));
-                        
+
                         stream = { let d = driver.lock().await; d.stream() };
                     }
                     Err(e) => error!("Retune failed: {:?}", e),
@@ -255,15 +279,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_contains_center()     { let b = HardwareBand { center_hz: 100_000_000, span_hz: 1_536_000, spectral_inv: false }; assert!(b.contains(100_000_000)); }
+    fn test_contains_center() {
+        let b = HardwareBand {
+            center_hz: 100_000_000,
+            span_hz: 1_536_000,
+            spectral_inv: false,
+        };
+        assert!(b.contains(100_000_000));
+    }
     #[test]
-    fn test_contains_edge()       { let b = HardwareBand { center_hz: 100_000_000, span_hz: 1_536_000, spectral_inv: false }; assert!(b.contains(100_768_000)); assert!(b.contains(99_232_000)); }
+    fn test_contains_edge() {
+        let b = HardwareBand {
+            center_hz: 100_000_000,
+            span_hz: 1_536_000,
+            spectral_inv: false,
+        };
+        assert!(b.contains(100_768_000));
+        assert!(b.contains(99_232_000));
+    }
     #[test]
-    fn test_excludes_outside()    { let b = HardwareBand { center_hz: 100_000_000, span_hz: 1_536_000, spectral_inv: false }; assert!(!b.contains(101_000_000)); assert!(!b.contains(99_000_000)); }
+    fn test_excludes_outside() {
+        let b = HardwareBand {
+            center_hz: 100_000_000,
+            span_hz: 1_536_000,
+            spectral_inv: false,
+        };
+        assert!(!b.contains(101_000_000));
+        assert!(!b.contains(99_000_000));
+    }
     #[test]
-    fn test_offset_positive()     { let b = HardwareBand { center_hz: 100_000_000, span_hz: 1_536_000, spectral_inv: false }; assert_eq!(b.offset_hz(100_500_000),  500_000); }
+    fn test_offset_positive() {
+        let b = HardwareBand {
+            center_hz: 100_000_000,
+            span_hz: 1_536_000,
+            spectral_inv: false,
+        };
+        assert_eq!(b.offset_hz(100_500_000), 500_000);
+    }
     #[test]
-    fn test_offset_negative()     { let b = HardwareBand { center_hz: 100_000_000, span_hz: 1_536_000, spectral_inv: false }; assert_eq!(b.offset_hz( 99_800_000), -200_000); }
+    fn test_offset_negative() {
+        let b = HardwareBand {
+            center_hz: 100_000_000,
+            span_hz: 1_536_000,
+            spectral_inv: false,
+        };
+        assert_eq!(b.offset_hz(99_800_000), -200_000);
+    }
     #[test]
-    fn test_offset_zero()         { let b = HardwareBand { center_hz: 101_100_000, span_hz: 1_536_000, spectral_inv: false }; assert_eq!(b.offset_hz(101_100_000), 0); }
+    fn test_offset_zero() {
+        let b = HardwareBand {
+            center_hz: 101_100_000,
+            span_hz: 1_536_000,
+            spectral_inv: false,
+        };
+        assert_eq!(b.offset_hz(101_100_000), 0);
+    }
 }
