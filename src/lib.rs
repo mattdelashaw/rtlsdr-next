@@ -267,7 +267,12 @@ impl Driver {
             "demod::write_reg_direct: P1_PAGE, P1_DDC_SYNC, sync_val={:02x} (spectral_inv={})",
             sync_val, plan.spectral_inv
         );
-        demod::write_reg_direct(hw, registers::demod::P1_PAGE, registers::demod::P1_DDC_SYNC, sync_val)?;
+        demod::write_reg_direct(
+            hw,
+            registers::demod::P1_PAGE,
+            registers::demod::P1_DDC_SYNC,
+            sync_val,
+        )?;
 
         if let Some(band) = band {
             let span = band.read().span_hz;
