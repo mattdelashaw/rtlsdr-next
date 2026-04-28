@@ -123,14 +123,22 @@
                         <Component Id='binary0' Guid='*'>
                             <File
                                 Id='exe0'
-                                Name='rtl_tcp.exe'
+                                Name='daemon.exe'
                                 DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\rtl_tcp.exe'
+                                Source='$(var.CargoTargetBinDir)\daemon.exe'
                                 KeyPath='yes'/>
                         </Component>
                         <Component Id='binary1' Guid='*'>
                             <File
                                 Id='exe1'
+                                Name='rtl_tcp.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\rtl_tcp.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                        <Component Id='binary2' Guid='*'>
+                            <File
+                                Id='exe2'
                                 Name='websdr.exe'
                                 DiskId='1'
                                 Source='$(var.CargoTargetBinDir)\websdr.exe'
@@ -159,6 +167,7 @@
 
             <ComponentRef Id='binary0'/>
             <ComponentRef Id='binary1'/>
+            <ComponentRef Id='binary2'/>
 
             <Feature
                 Id='Environment'
