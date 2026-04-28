@@ -61,11 +61,9 @@ impl Tuner for Fc001x {
             TunerType::FC0012 if id != FC0012_CHIP_ID => {
                 return Err(Error::Tuner(format!("FC0012 ID mismatch: 0x{:02x}", id)));
             }
-            TunerType::FC0013 if id != FC0013_CHIP_ID => {
+            TunerType::FC0013 if id != FC0013_CHIP_ID && id != FC0012_CHIP_ID => {
                 // Some FC0013 report 0xa1 (FC0012 ID), which is fine.
-                if id != FC0012_CHIP_ID {
-                    return Err(Error::Tuner(format!("FC0013 ID mismatch: 0x{:02x}", id)));
-                }
+                return Err(Error::Tuner(format!("FC0013 ID mismatch: 0x{:02x}", id)));
             }
             _ => {}
         }
