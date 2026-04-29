@@ -123,17 +123,17 @@
                         <Component Id='binary0' Guid='*'>
                             <File
                                 Id='exe0'
-                                Name='daemon.exe'
+                                Name='rtl_tcp.exe'
                                 DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\daemon.exe'
+                                Source='$(var.CargoTargetBinDir)\rtl_tcp.exe'
                                 KeyPath='yes'/>
                         </Component>
                         <Component Id='binary1' Guid='*'>
                             <File
                                 Id='exe1'
-                                Name='rtl_tcp.exe'
+                                Name='rtlsdr-daemon.exe'
                                 DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\rtl_tcp.exe'
+                                Source='$(var.CargoTargetBinDir)\rtlsdr-daemon.exe'
                                 KeyPath='yes'/>
                         </Component>
                         <Component Id='binary2' Guid='*'>
