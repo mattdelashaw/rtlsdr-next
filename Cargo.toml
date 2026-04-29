@@ -26,7 +26,7 @@ name = "websdr"
 path = "src/bin/websdr.rs"
 
 [[bin]]
-name = "daemon"
+name = "rtlsdr-daemon"
 path = "src/bin/daemon.rs"
 
 [lib]
@@ -46,7 +46,6 @@ byteorder = "1.5.0"
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11.5"
 futures-util = { version = "0.3.32", features = ["sink"] }
-libc = "0.2.182"
 libusb1-sys = { version = "0.7.0", features = ["vendored"] }
 log = "0.4.22"
 rusb = "0.9.4"
@@ -62,6 +61,7 @@ zerocopy = { version = "0.8.40", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.8.2"
+libc = "0.2.182"
 tokio = { version = "1", features = ["full", "test-util"] }
 
 [[bench]]

@@ -1,7 +1,7 @@
 use crate::Driver;
 use anyhow::Result;
 use byteorder::{BigEndian, ByteOrder};
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -217,7 +217,9 @@ async fn handle_client(
                         .is_err()
                     {
                         // Fallback to direct tuning (for standalone mode)
-                        let _ = d.set_frequency(arg as u64, None);
+                        if let Err(e) = d.set_frequency(arg as u64, None).await {
+                            error!("rtl_tcp: set_frequency failed: {:?}", e);
+                        }
                     }
                 }
                 0x02 => {
@@ -227,15 +229,17 @@ async fn handle_client(
                             arg
                         );
                     } else {
-                        let _ = d.set_sample_rate(arg);
+                        if let Err(e) = d.set_sample_rate(arg).await {
+                            warn!("rtl_tcp: invalid sample rate {} Hz: {:?}", arg, e);
+                        }
                     }
                 }
                 0x03 => {
                     // 0 = Auto Gain (Enable AGC), 1 = Manual Gain
                     if arg == 0 {
-                        let _ = d.set_agc(true);
+                        let _ = d.set_agc(true).await;
                     } else {
-                        let _ = d.set_agc(false);
+                        let _ = d.set_agc(false).await;
                         // Default to a sensible manual gain if none set
                         let cur = d.tuner.get_gain().unwrap_or(0.0);
                         if cur < 1.0 {
@@ -244,24 +248,24 @@ async fn handle_client(
                     }
                 }
                 0x04 => {
-                    let _ = d.set_agc(false);
+                    let _ = d.set_agc(false).await;
                     let db = arg as f32 / 10.0;
                     trace!("rtl_tcp: setting manual gain to {:.1} dB", db);
                     let _ = d.tuner.set_gain(db);
                 }
                 0x05 => {
-                    let _ = d.set_ppm(arg as i32);
+                    let _ = d.set_ppm(arg as i32).await;
                 }
                 0x08 => {
-                    let _ = d.set_agc(arg != 0);
+                    let _ = d.set_agc(arg != 0).await;
                 }
                 0x09..=0x0a => {}
                 0x0d => {} // SDR++ confirmation — silently ack
                 0x0e => {
-                    let _ = d.set_bias_t(arg != 0);
+                    let _ = d.set_bias_t(arg != 0).await;
                 }
                 0x13 => {
-                    let _ = d.set_agc(false);
+                    let _ = d.set_agc(false).await;
                     trace!("rtl_tcp: setting gain by index {}", arg);
                     let _ = d.tuner.set_gain_by_index(arg as usize);
                 }

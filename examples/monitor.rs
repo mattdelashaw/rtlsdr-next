@@ -36,10 +36,10 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Configure the hardware
     // Apply a 50 PPM correction (typical for some crystals)
-    driver.set_ppm(0)?;
+    driver.set_ppm(0).await?;
 
     // Set frequency to 100 MHz (VHF FM Band)
-    let actual_freq = driver.set_frequency(100_000_000, None)?;
+    let actual_freq = driver.set_frequency(100_000_000, None).await?;
     info!(
         "Center Frequency set to: {:.3} MHz",
         actual_freq as f64 / 1e6

@@ -69,14 +69,16 @@ impl Daemon {
     pub async fn start(cfg: &DaemonConfig) -> Result<Self> {
         let mut driver = Driver::with_index(cfg.hardware.device_index)?;
 
-        driver.set_sample_rate(cfg.hardware.sample_rate)?;
-        driver.set_frequency(cfg.hardware.initial_freq, None)?;
+        driver.set_sample_rate(cfg.hardware.sample_rate).await?;
+        driver
+            .set_frequency(cfg.hardware.initial_freq, None)
+            .await?;
         driver.tuner.set_gain(cfg.hardware.initial_gain)?;
         if cfg.hardware.ppm != 0 {
-            driver.set_ppm(cfg.hardware.ppm)?;
+            driver.set_ppm(cfg.hardware.ppm).await?;
         }
         if cfg.hardware.bias_t {
-            driver.set_bias_t(true)?;
+            driver.set_bias_t(true).await?;
         }
         driver.stream_config = cfg.stream.clone().into();
 
@@ -237,7 +239,7 @@ async fn run_pump(
                 info!("Retune: {} Hz → {} Hz", current, req.center_hz);
                 let (result, plan) = {
                     let mut d = driver.lock().await;
-                    let res = d.set_frequency(req.center_hz, None);
+                    let res = d.set_frequency(req.center_hz, None).await;
                     let plan = d.orchestrator.plan_tuning(req.center_hz);
                     (res, plan)
                 };
@@ -255,6 +257,7 @@ async fn run_pump(
                         // Send flush signal through broadcast to clear client pipelines
                         let _ = sample_tx.send(Arc::new(Vec::new()));
 
+                        stream.close();
                         stream = { let d = driver.lock().await; d.stream() };
                     }
                     Err(e) => error!("Retune failed: {:?}", e),

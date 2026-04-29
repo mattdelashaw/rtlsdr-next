@@ -41,13 +41,13 @@ async fn main() -> anyhow::Result<()> {
             println!("  Is V4:        {}", driver.info.is_v4);
 
             println!("\nSetting frequency to 100 MHz (FM band)...");
-            match driver.set_frequency(100_000_000, None) {
+            match driver.set_frequency(100_000_000, None).await {
                 Ok(actual) => println!("  Success! Actual: {} Hz", actual),
                 Err(e) => println!("  FAILED: {:?}", e),
             }
 
             println!("\nSetting frequency to 7 MHz (HF — V4 upconverter path)...");
-            match driver.set_frequency(7_000_000, None) {
+            match driver.set_frequency(7_000_000, None).await {
                 Ok(actual) => println!("  Success! Actual: {} Hz", actual),
                 Err(e) => println!("  FAILED: {:?}", e),
             }

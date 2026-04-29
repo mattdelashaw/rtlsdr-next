@@ -253,10 +253,6 @@ unsafe fn fir_decimate_neon(
 
         // ── 4-wide FMA loop ──────────────────────────────────────────────
         while j < taps_simd {
-            // Bounds check to prevent out-of-bounds access
-            if i + j + 3 >= extended.len() || j + 3 >= taps.len() {
-                break;
-            }
             unsafe {
                 let v_s = vld1q_f32(win_ptr.add(j));
                 let v_t = vld1q_f32(taps_ptr.add(j));
@@ -270,10 +266,7 @@ unsafe fn fir_decimate_neon(
 
         // ── Scalar tail (0..3 remaining taps) ───────────────────────────
         while j < taps_len {
-            // Safe access with bounds checking
-            if i + j < extended.len() && j < taps.len() {
-                acc += extended[i + j] * taps[j];
-            }
+            acc += extended[i + j] * taps[j];
             j += 1;
         }
 

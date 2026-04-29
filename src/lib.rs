@@ -34,8 +34,8 @@ pub struct Driver {
     device: Arc<Device<rusb::Context>>,
     pub info: DeviceInfo,
     pub tuner_type: TunerType,
-    pub tuner: Box<dyn Tuner>,
-    pub orchestrator: Box<dyn BoardOrchestrator>,
+    pub tuner: Arc<dyn Tuner>,
+    pub orchestrator: Arc<dyn BoardOrchestrator>,
     pub sample_rate: u32,
     pub frequency: u64,
     pub ppm: i32,
@@ -63,7 +63,7 @@ impl Driver {
         } else {
             BoardConfig::Generic
         };
-        let orchestrator = board.orchestrator();
+        let orchestrator: Arc<dyn BoardOrchestrator> = Arc::from(board.orchestrator());
 
         log::info!(
             "Found RTL2832U — manufacturer: {:?} product: {:?} board: {:?}",
@@ -103,33 +103,33 @@ impl Driver {
             xtal_hz = 28_800_000;
         }
 
-        let tuner: Box<dyn Tuner> = match tuner_type {
-            TunerType::R820T => Box::new(tuners::r82xx::R82xx::new(
+        let tuner: Arc<dyn Tuner> = match tuner_type {
+            TunerType::R820T => Arc::new(tuners::r82xx::R82xx::new(
                 device.clone(),
                 tuner_type,
                 registers::tuner_ids::R82XX_I2C_ADDR,
                 xtal_hz,
             )),
-            TunerType::R828D => Box::new(tuners::r82xx::R82xx::new(
+            TunerType::R828D => Arc::new(tuners::r82xx::R82xx::new(
                 device.clone(),
                 tuner_type,
                 registers::tuner_ids::R828D_I2C_ADDR,
                 xtal_hz,
             )),
-            TunerType::Unknown(_) if info.is_v4 => Box::new(tuners::r82xx::R82xx::new(
+            TunerType::Unknown(_) if info.is_v4 => Arc::new(tuners::r82xx::R82xx::new(
                 device.clone(),
                 TunerType::R828D,
                 registers::tuner_ids::R828D_I2C_ADDR,
                 xtal_hz,
             )),
-            TunerType::E4000 => Box::new(tuners::e4k::E4k::new(device.clone(), xtal_hz)),
-            TunerType::FC0012 => Box::new(tuners::fc001x::Fc001x::new(
+            TunerType::E4000 => Arc::new(tuners::e4k::E4k::new(device.clone(), xtal_hz)),
+            TunerType::FC0012 => Arc::new(tuners::fc001x::Fc001x::new(
                 device.clone(),
                 tuner_type,
                 registers::tuner_ids::FC0012_I2C_ADDR,
                 xtal_hz,
             )),
-            TunerType::FC0013 => Box::new(tuners::fc001x::Fc001x::new(
+            TunerType::FC0013 => Arc::new(tuners::fc001x::Fc001x::new(
                 device.clone(),
                 tuner_type,
                 registers::tuner_ids::FC0013_I2C_ADDR,
@@ -207,7 +207,7 @@ impl Driver {
         })
     }
 
-    pub fn set_frequency(
+    pub async fn set_frequency(
         &mut self,
         hz: u64,
         band: Option<&std::sync::Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>>,
@@ -220,17 +220,11 @@ impl Driver {
             return Err(e);
         }
 
-        let actual = match self.tuner.set_frequency(plan.tuner_hz) {
-            Ok(f) => f,
-            Err(e) => {
-                log::error!(
-                    "Tuner failed to set frequency {} Hz: {:?}",
-                    plan.tuner_hz,
-                    e
-                );
-                return Err(e);
-            }
-        };
+        let tuner = self.tuner.clone();
+        let tuner_hz = plan.tuner_hz;
+        let actual: u64 = tokio::task::spawn_blocking(move || tuner.set_frequency(tuner_hz))
+            .await
+            .map_err(|e| Error::HardwareCommand(format!("Tuner task panicked: {:?}", e)))??;
 
         if let Some(path) = plan.input_path
             && let Err(e) = self.apply_input_path(hz, path)
@@ -241,7 +235,7 @@ impl Driver {
 
         // Hardware path settling: GPIO and triplexer switches require time
         // for the analog transient to die down before re-syncing the demod.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
@@ -318,17 +312,27 @@ impl Driver {
         self.tuner.set_input_path(path)
     }
 
-    pub fn set_sample_rate(&mut self, rate_hz: u32) -> Result<()> {
+    pub async fn set_sample_rate(&mut self, rate_hz: u32) -> Result<()> {
+        if rate_hz == 0 {
+            return Err(Error::InvalidSampleRate(rate_hz));
+        }
+        if !(225_000..=3_200_000).contains(&rate_hz) {
+            log::warn!(
+                "Requested sample rate {} Hz is outside recommended range (225k-3.2M)",
+                rate_hz
+            );
+        }
+
         let _t = std::time::Instant::now();
         let hw = self.device.as_ref();
         let xtal = self.corrected_xtal_hz();
 
         let current_if = self.tuner.get_if_freq();
         let if_hz = if current_if > 0 {
-            if rate_hz < 2_500_000 {
-                2_300_000
-            } else {
-                3_570_000
+            match rate_hz {
+                r if r >= 2_500_000 => 3_570_000,
+                r if r >= 1_000_000 => 2_300_000,
+                _ => 0, // drop to zero-IF for narrow rates
             }
         } else {
             0
@@ -340,35 +344,44 @@ impl Driver {
         demod::reset_demod(hw)?;
         demod::set_sample_rate_xtal(hw, rate_hz, xtal)?;
         demod::set_if_freq_xtal(hw, if_hz as u32, xtal)?;
+
+        // Re-apply spectral inversion state — reset_demod clears it
+        let plan = self.orchestrator.plan_tuning(self.frequency);
+        let sync_val = if plan.spectral_inv {
+            registers::demod::P1_DDC_SYNC_INVERT
+        } else {
+            registers::demod::P1_DDC_SYNC_NORMAL
+        };
         demod::write_reg_direct(
             hw,
             registers::demod::P1_PAGE,
             registers::demod::P1_DDC_SYNC,
-            registers::demod::P1_DDC_SYNC_NORMAL,
+            sync_val,
         )?;
 
         self.sample_rate = rate_hz;
         log::info!(
-            "Sample rate set to {} Hz (took: {}ms)",
+            "Sample rate set to {} Hz (IF: {} Hz, took: {}ms)",
             rate_hz,
+            if_hz,
             _t.elapsed().as_millis()
         );
         Ok(())
     }
 
-    pub fn set_ppm(&mut self, ppm: i32) -> Result<()> {
+    pub async fn set_ppm(&mut self, ppm: i32) -> Result<()> {
         self.ppm = ppm;
         self.tuner.set_ppm(ppm)?;
         let freq = self.frequency;
         let rate = self.sample_rate;
         if freq > 0 {
-            let _ = self.set_frequency(freq, None);
+            let _ = self.set_frequency(freq, None).await;
         }
-        let _ = self.set_sample_rate(rate);
+        let _ = self.set_sample_rate(rate).await;
         Ok(())
     }
 
-    pub fn set_bias_t(&self, on: bool) -> Result<()> {
+    pub async fn set_bias_t(&self, on: bool) -> Result<()> {
         let hw = self.device.as_ref();
         hw.set_gpio_output(0)?;
         hw.set_gpio_bit(0, on)?;
@@ -376,7 +389,7 @@ impl Driver {
         Ok(())
     }
 
-    pub fn set_agc(&self, on: bool) -> Result<()> {
+    pub async fn set_agc(&self, on: bool) -> Result<()> {
         let hw = self.device.as_ref();
         // Bit 5 of P0_AGC_CTL enables/disables the RTL2832U demodulator AGC.
         // 0x25 = ON, 0x05 = OFF (preserves other default bits)

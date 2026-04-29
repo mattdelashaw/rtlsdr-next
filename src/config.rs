@@ -44,7 +44,7 @@ pub struct DaemonConfig {
 
 // ── Hardware ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct HardwareConfig {
     pub device_index: u32,
     pub sample_rate: u32,
@@ -71,7 +71,7 @@ impl Default for HardwareConfig {
 
 /// Config-layer mirror of `crate::stream::StreamConfig`.
 /// Named `StreamCfg` to avoid a name collision when both are in scope.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct StreamCfg {
     pub num_buffers: usize,
     pub buffer_size: usize,
@@ -178,11 +178,15 @@ impl DaemonConfig {
     /// top-level section granularity — a user file that includes `[hardware]`
     /// replaces the entire hardware section; omitting `[hardware]` keeps defaults.
     fn merge_from(&mut self, other: DaemonConfig) {
-        // Hardware: replace entirely if the user file contained [hardware].
-        // We detect "was [hardware] present" by checking if any value differs
-        // from the Default impl — simple and avoids a separate Option<Section> type.
-        self.hardware = other.hardware;
-        self.stream = other.stream;
+        // Hardware: replace only if the user file contained [hardware] settings
+        // that differ from the base defaults.
+        if other.hardware != HardwareConfig::default() {
+            self.hardware = other.hardware;
+        }
+        // Stream: same logic.
+        if other.stream != StreamCfg::default() {
+            self.stream = other.stream;
+        }
 
         // Servers: merge Option fields individually so a user file that only sets
         // `rtl_tcp` doesn't wipe out a `websdr` default (there isn't one, but

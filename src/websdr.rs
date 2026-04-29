@@ -97,11 +97,11 @@ impl WebSdrServer {
         {
             let mut d = driver.lock().await;
             info!("WebSDR: setting sample rate to {} Hz", PIPELINE_SAMPLE_RATE);
-            if let Err(e) = d.set_sample_rate(PIPELINE_SAMPLE_RATE) {
+            if let Err(e) = d.set_sample_rate(PIPELINE_SAMPLE_RATE).await {
                 error!("CRITICAL: Failed to set sample rate: {:?}", e);
             }
             if d.frequency == 0 {
-                let _ = d.set_frequency(101_100_000, None);
+                let _ = d.set_frequency(101_100_000, None).await;
                 let _ = d.tuner.set_gain(30.0);
             }
         }
@@ -147,7 +147,7 @@ impl WebSdrServer {
             tokio::spawn(async move {
                 while let Some(req) = retune_rx.recv().await {
                     let mut d = retune_driver.lock().await;
-                    if let Ok(actual) = d.set_frequency(req.center_hz, Some(&retune_band)) {
+                    if let Ok(actual) = d.set_frequency(req.center_hz, Some(&retune_band)).await {
                         info!("Standalone retune → {} Hz", actual);
                     }
                 }
@@ -558,8 +558,7 @@ async fn run_client_pipeline(
         }
 
         if mode == DemodMode::Off {
-            let _ = sample_rx.try_recv();
-            tokio::task::yield_now().await;
+            let _ = sample_rx.recv().await;
             continue;
         }
 

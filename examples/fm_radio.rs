@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     // 2. Configure for FM Broadcast
     // Typical FM station in many regions: 100.0 MHz
     let freq = 100_000_000;
-    driver.set_frequency(freq, None)?;
+    driver.set_frequency(freq, None).await?;
     driver.tuner.set_gain(32.8)?;
 
     // We want to decimate down to something manageable for audio.

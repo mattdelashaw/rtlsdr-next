@@ -1,7 +1,7 @@
 //! RTL2832U baseband / demodulator initialization.
 
 use crate::device::HardwareInterface;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::registers::{block, demod, sys, usb};
 use log::{debug, info};
 
@@ -130,6 +130,9 @@ pub fn set_if_freq_xtal(hw: &dyn HardwareInterface, if_hz: u32, xtal_hz: u32) ->
 }
 
 pub fn set_sample_rate_xtal(hw: &dyn HardwareInterface, rate_hz: u32, xtal_hz: u32) -> Result<()> {
+    if rate_hz == 0 {
+        return Err(Error::InvalidSampleRate(0));
+    }
     let rsamp_ratio = ((xtal_hz as u64) * (1u64 << 22) / rate_hz as u64) as u32 & 0x0ffffffc;
     let rsamp_ratio = rsamp_ratio | ((rsamp_ratio & 0x08000000) << 1);
     hw.demod_write_reg16(demod::P1_PAGE, 0x9f, (rsamp_ratio >> 16) as u16)?;
