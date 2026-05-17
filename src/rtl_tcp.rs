@@ -200,29 +200,39 @@ async fn handle_client(
     let cmd_driver = driver.clone();
     let mut cmd_task = tokio::spawn(async move {
         let mut buf = [0u8; 5];
+        let mut unsupported_count = 0;
         loop {
             reader.read_exact(&mut buf).await?;
             let cmd = buf[0];
             let arg = BigEndian::read_u32(&buf[1..5]);
             let mut d = cmd_driver.lock().await;
-            info!("rtl_tcp cmd 0x{:02x} arg={} (freq {} Hz)", cmd, arg, arg);
+            
+            // Validate command frequency argument for sane values
+            let freq_hz = arg as u64;
+            if cmd == 0x01 && freq_hz < 100_000 {
+                warn!("rtl_tcp: ignoring invalid frequency request {} Hz", freq_hz);
+                continue;
+            }
+
             match cmd {
                 0x01 => {
+                    unsupported_count = 0;
                     // Try to use the shared retune channel first (for daemon mode sync)
                     if hw_tx
                         .send(crate::daemon::HardwareRequest::Retune {
-                            center_hz: arg as u64,
+                            center_hz: freq_hz,
                         })
                         .await
                         .is_err()
                     {
                         // Fallback to direct tuning (for standalone mode)
-                        if let Err(e) = d.set_frequency(arg as u64, None).await {
+                        if let Err(e) = d.set_frequency(freq_hz, None).await {
                             error!("rtl_tcp: set_frequency failed: {:?}", e);
                         }
                     }
                 }
                 0x02 => {
+                    unsupported_count = 0;
                     if hw_tx
                         .send(crate::daemon::HardwareRequest::SetSampleRate {
                             rate_hz: arg,
@@ -236,6 +246,7 @@ async fn handle_client(
                     }
                 }
                 0x03 => {
+                    unsupported_count = 0;
                     // 0 = Auto Gain (Enable AGC), 1 = Manual Gain
                     if arg == 0 {
                         let _ = d.set_agc(true).await;
@@ -249,28 +260,44 @@ async fn handle_client(
                     }
                 }
                 0x04 => {
+                    unsupported_count = 0;
                     let _ = d.set_agc(false).await;
                     let db = arg as f32 / 10.0;
                     trace!("rtl_tcp: setting manual gain to {:.1} dB", db);
                     let _ = d.tuner.set_gain(db);
                 }
                 0x05 => {
+                    unsupported_count = 0;
                     let _ = d.set_ppm(arg as i32).await;
                 }
                 0x08 => {
+                    unsupported_count = 0;
                     let _ = d.set_agc(arg != 0).await;
                 }
-                0x09..=0x0a => {}
-                0x0d => {} // SDR++ confirmation — silently ack
+                0x09..=0x0a => {
+                    unsupported_count = 0;
+                }
+                0x0d => {
+                    unsupported_count = 0;
+                } // SDR++ confirmation — silently ack
                 0x0e => {
+                    unsupported_count = 0;
                     let _ = d.set_bias_t(arg != 0).await;
                 }
                 0x13 => {
+                    unsupported_count = 0;
                     let _ = d.set_agc(false).await;
                     trace!("rtl_tcp: setting gain by index {}", arg);
                     let _ = d.tuner.set_gain_by_index(arg as usize);
                 }
-                _ => warn!("Unsupported rtl_tcp cmd: 0x{:02x}", cmd),
+                _ => {
+                    unsupported_count += 1;
+                    warn!("Unsupported rtl_tcp cmd: 0x{:02x}", cmd);
+                    if unsupported_count > 20 {
+                        error!("rtl_tcp: too many unsupported commands, closing connection");
+                        return Err(anyhow::anyhow!("Protocol out of sync"));
+                    }
+                }
             }
         }
         #[allow(unreachable_code)]

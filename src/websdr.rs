@@ -242,6 +242,7 @@ async fn ws_handler(
 // ── Per-client connection handler ─────────────────────────────────────────────
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
+    info!("WebSDR client connected");
     let (info, hw_freq, gain) = {
         let d = state.driver.lock().await;
         (
@@ -451,7 +452,7 @@ impl DspState {
                 0.001,
                 500.0,
                 AUDIO_SAMPLE_RATE as f32,
-                0.02,
+                0.04,
             ),
             pre_i_wfm: Decimator::new(8, 0.45 / 8.0, 31),
             pre_q_wfm: Decimator::new(8, 0.45 / 8.0, 31),
@@ -678,6 +679,9 @@ async fn run_client_pipeline(
 
         // ── Post-demod audio ──────────────────────────────────────────────────
         if !audio.is_empty() {
+            // Apply DC removal first so RSSI calculation is accurate
+            dsp.dc_audio.process_mono(&mut audio);
+
             // Calculate narrowband power (dBFS)
             let pwr = audio.iter().map(|&s| s * s).sum::<f32>() / audio.len() as f32;
             let dbfs = if pwr > 1e-12 {
@@ -693,7 +697,6 @@ async fn run_client_pipeline(
             if dsp.narrowband_pwr < dsp.squelch_db {
                 audio.fill(0.0);
             } else {
-                dsp.dc_audio.process_mono(&mut audio);
                 dsp.audio_agc.process(&mut audio);
             }
 

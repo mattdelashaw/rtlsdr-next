@@ -434,7 +434,14 @@ impl AudioAgc {
             }
 
             if self.envelope < self.min_magnitude {
-                // Signal is dead air. Freeze gain to avoid pumping.
+                // Signal is dead air. Slowly decay gain back to 1.0 to avoid
+                // being "stuck" at high gain and amplifying the noise floor.
+                if self.gain > 1.0 {
+                    self.gain = 0.9999 * self.gain + 0.0001 * 1.0;
+                } else if self.gain < 1.0 {
+                    self.gain = 0.9999 * self.gain + 0.0001 * 1.0;
+                }
+
                 if self.hang_counter > 0 {
                     self.hang_counter -= 1;
                 }
@@ -453,7 +460,11 @@ impl AudioAgc {
                 if self.hang_counter > 0 {
                     self.hang_counter -= 1;
                 } else {
-                    self.gain = (1.0 - self.decay) * self.gain + self.decay * error;
+                    // Slow down the decay if we are near the noise floor (SNR-aware hysteresis)
+                    let snr_factor = ((self.envelope - self.min_magnitude) / self.min_magnitude).clamp(0.0, 1.0);
+                    let effective_decay = self.decay * (0.1 + 0.9 * snr_factor);
+
+                    self.gain = (1.0 - effective_decay) * self.gain + effective_decay * error;
                 }
             }
 
