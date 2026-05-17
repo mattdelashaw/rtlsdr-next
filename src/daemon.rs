@@ -161,7 +161,6 @@ impl Daemon {
             });
         }
 
-
         #[cfg(unix)]
         if let Some(path) = &cfg.servers.unix_socket {
             // SharingServer still uses a Receiver — leave as-is for now.

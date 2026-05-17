@@ -206,7 +206,7 @@ async fn handle_client(
             let cmd = buf[0];
             let arg = BigEndian::read_u32(&buf[1..5]);
             let mut d = cmd_driver.lock().await;
-            
+
             // Validate command frequency argument for sane values
             let freq_hz = arg as u64;
             if cmd == 0x01 && freq_hz < 100_000 {
@@ -219,9 +219,7 @@ async fn handle_client(
                     unsupported_count = 0;
                     // Try to use the shared retune channel first (for daemon mode sync)
                     if hw_tx
-                        .send(crate::daemon::HardwareRequest::Retune {
-                            center_hz: freq_hz,
-                        })
+                        .send(crate::daemon::HardwareRequest::Retune { center_hz: freq_hz })
                         .await
                         .is_err()
                     {
@@ -234,15 +232,12 @@ async fn handle_client(
                 0x02 => {
                     unsupported_count = 0;
                     if hw_tx
-                        .send(crate::daemon::HardwareRequest::SetSampleRate {
-                            rate_hz: arg,
-                        })
+                        .send(crate::daemon::HardwareRequest::SetSampleRate { rate_hz: arg })
                         .await
                         .is_err()
+                        && let Err(e) = d.set_sample_rate(arg).await
                     {
-                        if let Err(e) = d.set_sample_rate(arg).await {
-                            warn!("rtl_tcp: invalid sample rate {} Hz: {:?}", arg, e);
-                        }
+                        warn!("rtl_tcp: invalid sample rate {} Hz: {:?}", arg, e);
                     }
                 }
                 0x03 => {
