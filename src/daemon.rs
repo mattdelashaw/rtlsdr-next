@@ -44,11 +44,12 @@ impl HardwareBand {
     }
 }
 
-// ── Retune command ────────────────────────────────────────────────────────────
+// ── Hardware Request ──────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-pub struct RetuneRequest {
-    pub center_hz: u64,
+pub enum HardwareRequest {
+    Retune { center_hz: u64 },
+    SetSampleRate { rate_hz: u32 },
 }
 
 // ── Daemon ────────────────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ pub struct Daemon {
     driver: Arc<Mutex<Driver>>,
     sample_tx: broadcast::Sender<Arc<Vec<u8>>>,
     pub band: Arc<RwLock<HardwareBand>>,
-    pub retune_tx: mpsc::Sender<RetuneRequest>,
+    pub hw_tx: mpsc::Sender<HardwareRequest>,
     cancel: CancellationToken,
 }
 
@@ -89,7 +90,7 @@ impl Daemon {
             spectral_inv: plan.spectral_inv,
         }));
 
-        let (retune_tx, retune_rx) = mpsc::channel::<RetuneRequest>(8);
+        let (hw_tx, hw_rx) = mpsc::channel::<HardwareRequest>(8);
         let (sample_tx, _) = broadcast::channel::<Arc<Vec<u8>>>(64);
         let cancel = CancellationToken::new();
 
@@ -100,13 +101,13 @@ impl Daemon {
 
         let driver_clone = driver.clone();
         tokio::spawn(async move {
-            run_pump(driver_clone, tx_clone, band_clone, retune_rx, cancel_clone).await;
+            run_pump(driver_clone, tx_clone, band_clone, hw_rx, cancel_clone).await;
         });
 
         Ok(Self {
             driver,
             band,
-            retune_tx,
+            hw_tx,
             sample_tx,
             cancel,
         })
@@ -121,13 +122,12 @@ impl Daemon {
             let driver = self.driver.clone();
             let tx = self.sample_tx.clone();
             let band = self.band.clone();
-            let retune_tx = self.retune_tx.clone();
+            let hw_tx = self.hw_tx.clone();
             let addr = addr.clone();
             info!("rtl_tcp spawned on {}", addr);
             join_set.spawn(async move {
                 if let Err(e) =
-                    crate::rtl_tcp::TcpServer::start_shared(driver, tx, band, retune_tx, &addr)
-                        .await
+                    crate::rtl_tcp::TcpServer::start_shared(driver, tx, band, hw_tx, &addr).await
                 {
                     error!("rtl_tcp error: {:?}", e);
                 }
@@ -139,7 +139,7 @@ impl Daemon {
             let driver = self.driver.clone();
             let tx = self.sample_tx.clone();
             let band = self.band.clone();
-            let retune_tx = self.retune_tx.clone();
+            let hw_tx = self.hw_tx.clone();
             let addr = addr.clone();
             let tls = cfg.tls.pair();
             let sample_rate = cfg.hardware.sample_rate;
@@ -149,7 +149,7 @@ impl Daemon {
                     driver,
                     tx,
                     band,
-                    retune_tx,
+                    hw_tx,
                     sample_rate,
                     &addr,
                     tls,
@@ -160,6 +160,7 @@ impl Daemon {
                 }
             });
         }
+
 
         #[cfg(unix)]
         if let Some(path) = &cfg.servers.unix_socket {
@@ -213,7 +214,7 @@ async fn run_pump(
     driver: Arc<Mutex<Driver>>,
     sample_tx: broadcast::Sender<Arc<Vec<u8>>>,
     band: Arc<RwLock<HardwareBand>>,
-    mut retune_rx: mpsc::Receiver<RetuneRequest>,
+    mut hw_rx: mpsc::Receiver<HardwareRequest>,
     cancel: CancellationToken,
 ) {
     info!("Broadcast pump started.");
@@ -232,35 +233,70 @@ async fn run_pump(
                 break;
             }
 
-            Some(req) = retune_rx.recv() => {
-                let current = band.read().center_hz;
-                if req.center_hz == current { continue; }
+            Some(req) = hw_rx.recv() => {
+                match req {
+                    HardwareRequest::Retune { center_hz } => {
+                        let current = band.read().center_hz;
+                        if center_hz == current { continue; }
 
-                info!("Retune: {} Hz → {} Hz", current, req.center_hz);
-                let (result, plan) = {
-                    let mut d = driver.lock().await;
-                    let res = d.set_frequency(req.center_hz, None).await;
-                    let plan = d.orchestrator.plan_tuning(req.center_hz);
-                    (res, plan)
-                };
-
-                match result {
-                    Ok(logical_hz) => {
-                        let span = band.read().span_hz;
-                        *band.write() = HardwareBand {
-                            center_hz: logical_hz,
-                            span_hz: span,
-                            spectral_inv: plan.spectral_inv,
+                        info!("Retune: {} Hz → {} Hz", current, center_hz);
+                        let (result, plan) = {
+                            let mut d = driver.lock().await;
+                            let res = d.set_frequency(center_hz, None).await;
+                            let plan = d.orchestrator.plan_tuning(center_hz);
+                            (res, plan)
                         };
-                        info!("Retuned to {} Hz (Inv: {})", logical_hz, plan.spectral_inv);
 
-                        // Send flush signal through broadcast to clear client pipelines
-                        let _ = sample_tx.send(Arc::new(Vec::new()));
+                        match result {
+                            Ok(logical_hz) => {
+                                let span = band.read().span_hz;
+                                *band.write() = HardwareBand {
+                                    center_hz: logical_hz,
+                                    span_hz: span,
+                                    spectral_inv: plan.spectral_inv,
+                                };
+                                info!("Retuned to {} Hz (Inv: {})", logical_hz, plan.spectral_inv);
 
-                        stream.close();
-                        stream = { let d = driver.lock().await; d.stream() };
+                                // Send flush signal through broadcast to clear client pipelines
+                                let _ = sample_tx.send(Arc::new(Vec::new()));
+
+                                stream.close();
+                                stream = { let d = driver.lock().await; d.stream() };
+                            }
+                            Err(e) => error!("Retune failed: {:?}", e),
+                        }
                     }
-                    Err(e) => error!("Retune failed: {:?}", e),
+                    HardwareRequest::SetSampleRate { rate_hz } => {
+                        let current = band.read().span_hz;
+                        if rate_hz == current { continue; }
+
+                        info!("Sample Rate Change: {} Hz → {} Hz", current, rate_hz);
+                        let (result, plan) = {
+                            let mut d = driver.lock().await;
+                            let res = d.set_sample_rate(rate_hz).await;
+                            let plan = d.orchestrator.plan_tuning(d.frequency);
+                            (res, plan)
+                        };
+
+                        match result {
+                            Ok(()) => {
+                                let center = band.read().center_hz;
+                                *band.write() = HardwareBand {
+                                    center_hz: center,
+                                    span_hz: rate_hz,
+                                    spectral_inv: plan.spectral_inv,
+                                };
+                                info!("Sample rate changed to {} Hz", rate_hz);
+
+                                // Send flush signal through broadcast to clear client pipelines
+                                let _ = sample_tx.send(Arc::new(Vec::new()));
+
+                                stream.close();
+                                stream = { let d = driver.lock().await; d.stream() };
+                            }
+                            Err(e) => error!("Sample rate change failed: {:?}", e),
+                        }
+                    }
                 }
             }
 

@@ -85,6 +85,7 @@ pub struct SampleStream<T: UsbContext + 'static> {
     receiver: mpsc::Receiver<crate::Result<PooledBuffer<TransportBuffer<T>>>>,
     flush_rx: broadcast::Receiver<()>,
     pub(crate) cancel_token: CancellationToken,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl<T: UsbContext + 'static> SampleStream<T> {
@@ -106,7 +107,7 @@ impl<T: UsbContext + 'static> SampleStream<T> {
         let cancel_token = CancellationToken::new();
         let cancel_clone = cancel_token.clone();
 
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             loop {
                 if cancel_clone.is_cancelled() {
                     break;
@@ -153,6 +154,7 @@ impl<T: UsbContext + 'static> SampleStream<T> {
             receiver: rx,
             flush_rx,
             cancel_token,
+            handle: Some(handle),
         }
     }
 
@@ -177,14 +179,20 @@ impl<T: UsbContext + 'static> SampleStream<T> {
         }
     }
 
-    pub fn close(&self) {
+    pub fn close(&mut self) {
         self.cancel_token.cancel();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
     }
 }
 
 impl<T: UsbContext> Drop for SampleStream<T> {
     fn drop(&mut self) {
         self.cancel_token.cancel();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
     }
 }
 
@@ -324,15 +332,8 @@ impl<T: UsbContext + 'static> F32Stream<T> {
                 dec_buf.push(q_val);
             }
 
-            // Return intermediate buffer to pool. This runs in an async context
-            // so we can await rather than risk dropping the buffer.
-            if let Err(mpsc::error::TrySendError::Full(buf)) = self.pool_f32_tx.try_send(f32_buf) {
-                // Pool is full — someone is not consuming fast enough. Send async.
-                let tx = self.pool_f32_tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send(buf).await;
-                });
-            }
+            // Return intermediate buffer to pool.
+            let _ = self.pool_f32_tx.try_send(f32_buf);
 
             Some(Ok(PooledBuffer::new(
                 dec_buf,
@@ -346,7 +347,7 @@ impl<T: UsbContext + 'static> F32Stream<T> {
         }
     }
 
-    pub fn close(&self) {
+    pub fn close(&mut self) {
         self.raw_stream.close();
     }
 }

@@ -1,5 +1,5 @@
 use crate::Driver;
-use crate::daemon::{HardwareBand, RetuneRequest};
+use crate::daemon::{HardwareBand, HardwareRequest};
 use crate::dsp::{AmDemodulator, Decimator, FmDemodulator, Nco};
 use axum::{
     Router,
@@ -81,7 +81,7 @@ pub struct WebSdrServer {
     /// its own receiver. No relay task, no extra async hop.
     sample_tx: broadcast::Sender<Arc<Vec<u8>>>,
     band: Arc<RwLock<HardwareBand>>,
-    retune_tx: mpsc::Sender<RetuneRequest>,
+    hw_tx: mpsc::Sender<crate::daemon::HardwareRequest>,
     sample_rate: u32,
 }
 
@@ -140,15 +140,17 @@ impl WebSdrServer {
             span_hz: PIPELINE_SAMPLE_RATE,
             spectral_inv: initial_inv,
         }));
-        let (retune_tx, mut retune_rx) = mpsc::channel::<RetuneRequest>(8);
+        let (hw_tx, mut hw_rx) = mpsc::channel::<crate::daemon::HardwareRequest>(8);
         {
             let retune_driver = driver.clone();
             let retune_band = band.clone();
             tokio::spawn(async move {
-                while let Some(req) = retune_rx.recv().await {
-                    let mut d = retune_driver.lock().await;
-                    if let Ok(actual) = d.set_frequency(req.center_hz, Some(&retune_band)).await {
-                        info!("Standalone retune → {} Hz", actual);
+                while let Some(req) = hw_rx.recv().await {
+                    if let crate::daemon::HardwareRequest::Retune { center_hz } = req {
+                        let mut d = retune_driver.lock().await;
+                        if let Ok(actual) = d.set_frequency(center_hz, Some(&retune_band)).await {
+                            info!("Standalone retune → {} Hz", actual);
+                        }
                     }
                 }
             });
@@ -158,7 +160,7 @@ impl WebSdrServer {
             driver,
             sample_tx,
             band,
-            retune_tx,
+            hw_tx,
             sample_rate: PIPELINE_SAMPLE_RATE,
         });
         Self::bind(state, addr, tls).await
@@ -173,7 +175,7 @@ impl WebSdrServer {
         driver: Arc<Mutex<Driver>>,
         sample_tx: broadcast::Sender<Arc<Vec<u8>>>,
         band: Arc<RwLock<HardwareBand>>,
-        retune_tx: mpsc::Sender<RetuneRequest>,
+        hw_tx: mpsc::Sender<crate::daemon::HardwareRequest>,
         sample_rate: u32,
         addr: &str,
         tls: Option<(PathBuf, PathBuf)>,
@@ -182,7 +184,7 @@ impl WebSdrServer {
             driver,
             sample_tx,
             band,
-            retune_tx,
+            hw_tx,
             sample_rate,
         });
         Self::bind(state, addr, tls).await
@@ -333,8 +335,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WebSdrServer>) {
                         let _ = freq_tx.send(hz).await;
                     } else {
                         let _ = cmd_state
-                            .retune_tx
-                            .send(RetuneRequest { center_hz: hz })
+                            .hw_tx
+                            .send(HardwareRequest::Retune { center_hz: hz })
                             .await;
                         let _ = freq_tx.send(hz).await;
                     }
@@ -722,3 +724,4 @@ async fn run_client_pipeline(
         }
     }
 }
+

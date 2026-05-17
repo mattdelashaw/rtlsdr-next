@@ -64,7 +64,7 @@ impl TcpServer {
             span_hz: 2_048_000, // Default for standalone
             spectral_inv: false,
         }));
-        let (retune_tx, _retune_rx) = mpsc::channel::<crate::daemon::RetuneRequest>(8);
+        let (hw_tx, _hw_rx) = mpsc::channel::<crate::daemon::HardwareRequest>(8);
 
         let server = Self {
             _driver: driver.clone(),
@@ -75,7 +75,7 @@ impl TcpServer {
             driver,
             tx,
             band,
-            retune_tx,
+            hw_tx,
             addr.to_string(),
             cancel_token,
             false,
@@ -91,7 +91,7 @@ impl TcpServer {
         driver: Arc<Mutex<Driver>>,
         sample_tx: broadcast::Sender<Arc<Vec<u8>>>,
         band: Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
-        retune_tx: mpsc::Sender<crate::daemon::RetuneRequest>,
+        hw_tx: mpsc::Sender<crate::daemon::HardwareRequest>,
         addr: &str,
     ) -> Result<()> {
         let cancel_token = CancellationToken::new();
@@ -99,7 +99,7 @@ impl TcpServer {
             driver,
             sample_tx,
             band,
-            retune_tx,
+            hw_tx,
             addr.to_string(),
             cancel_token,
             true,
@@ -118,7 +118,7 @@ async fn run_listener(
     driver: Arc<Mutex<Driver>>,
     tx: broadcast::Sender<Arc<Vec<u8>>>,
     band: Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
-    retune_tx: mpsc::Sender<crate::daemon::RetuneRequest>,
+    hw_tx: mpsc::Sender<crate::daemon::HardwareRequest>,
     addr: String,
     cancel_token: CancellationToken,
     is_shared: bool,
@@ -136,7 +136,7 @@ async fn run_listener(
                     let client_rx     = tx.subscribe();
                     let client_token  = cancel_token.clone();
                     let client_band   = band.clone();
-                    let client_retune = retune_tx.clone();
+                    let client_retune = hw_tx.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handle_client(client_driver, socket, client_rx, client_token, client_band, client_retune, is_shared).await {
                             warn!("Client {} error: {:?}", peer, e);
@@ -159,8 +159,8 @@ async fn handle_client(
     mut client_rx: broadcast::Receiver<Arc<Vec<u8>>>,
     cancel_token: CancellationToken,
     _band: Arc<parking_lot::RwLock<crate::daemon::HardwareBand>>,
-    retune_tx: mpsc::Sender<crate::daemon::RetuneRequest>,
-    is_shared: bool,
+    hw_tx: mpsc::Sender<crate::daemon::HardwareRequest>,
+    _is_shared: bool,
 ) -> anyhow::Result<()> {
     // 1. Send handshake header
     let (tuner_id, gains) = {
@@ -209,8 +209,8 @@ async fn handle_client(
             match cmd {
                 0x01 => {
                     // Try to use the shared retune channel first (for daemon mode sync)
-                    if retune_tx
-                        .send(crate::daemon::RetuneRequest {
+                    if hw_tx
+                        .send(crate::daemon::HardwareRequest::Retune {
                             center_hz: arg as u64,
                         })
                         .await
@@ -223,12 +223,13 @@ async fn handle_client(
                     }
                 }
                 0x02 => {
-                    if is_shared {
-                        warn!(
-                            "rtl_tcp: ignoring sample rate change request to {} Hz (daemon mode)",
-                            arg
-                        );
-                    } else {
+                    if hw_tx
+                        .send(crate::daemon::HardwareRequest::SetSampleRate {
+                            rate_hz: arg,
+                        })
+                        .await
+                        .is_err()
+                    {
                         if let Err(e) = d.set_sample_rate(arg).await {
                             warn!("rtl_tcp: invalid sample rate {} Hz: {:?}", arg, e);
                         }

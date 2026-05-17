@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::demod::DEFAULT_SAMPLE_RATE;
+
 // Baked-in reference defaults — always present, never missing.
 const DEFAULT_TOML: &str = include_str!("../config/default.toml");
 
@@ -178,19 +180,35 @@ impl DaemonConfig {
     /// top-level section granularity — a user file that includes `[hardware]`
     /// replaces the entire hardware section; omitting `[hardware]` keeps defaults.
     fn merge_from(&mut self, other: DaemonConfig) {
-        // Hardware: replace only if the user file contained [hardware] settings
-        // that differ from the base defaults.
-        if other.hardware != HardwareConfig::default() {
-            self.hardware = other.hardware;
+        // Hardware: surgical merge.
+        if other.hardware.device_index != 0 {
+            self.hardware.device_index = other.hardware.device_index;
         }
-        // Stream: same logic.
-        if other.stream != StreamCfg::default() {
-            self.stream = other.stream;
+        if other.hardware.sample_rate != DEFAULT_SAMPLE_RATE {
+            self.hardware.sample_rate = other.hardware.sample_rate;
+        }
+        if other.hardware.initial_freq != 0 {
+            self.hardware.initial_freq = other.hardware.initial_freq;
+        }
+        if other.hardware.initial_gain != 0.0 {
+            self.hardware.initial_gain = other.hardware.initial_gain;
+        }
+        if other.hardware.ppm != 0 {
+            self.hardware.ppm = other.hardware.ppm;
+        }
+        if other.hardware.bias_t {
+            self.hardware.bias_t = true;
         }
 
-        // Servers: merge Option fields individually so a user file that only sets
-        // `rtl_tcp` doesn't wipe out a `websdr` default (there isn't one, but
-        // this is the correct merge semantics going forward).
+        // Stream: surgical merge.
+        if other.stream.num_buffers != 16 {
+            self.stream.num_buffers = other.stream.num_buffers;
+        }
+        if other.stream.buffer_size != 256 * 1024 {
+            self.stream.buffer_size = other.stream.buffer_size;
+        }
+
+        // Servers: merge Option fields individually.
         if other.servers.rtl_tcp.is_some() {
             self.servers.rtl_tcp = other.servers.rtl_tcp;
         }

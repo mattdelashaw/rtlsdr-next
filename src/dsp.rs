@@ -110,7 +110,7 @@ impl Decimator {
     /// cutoff  = 0.8 / factor   (Widened to avoid clipping FM sidebands)
     /// num_taps = 12 * factor + 1 (Higher quality rejection)
     pub fn with_factor(factor: usize) -> Self {
-        let cutoff = 0.8 / factor as f32;
+        let cutoff = 0.75 / factor as f32;
         let num_taps = 12 * factor + 1;
         Self::new(factor, cutoff, num_taps)
     }

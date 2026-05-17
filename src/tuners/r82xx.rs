@@ -243,13 +243,15 @@ impl R82xx {
             return Err(Error::InvalidFrequency(lo_freq_hz));
         }
 
-        let ni = ((nint - 13) / 4) as u8;
+        let ni = (nint.saturating_sub(13) / 4) as u8;
         let si = (nint as u8).wrapping_sub(4u8.wrapping_mul(ni).wrapping_add(13));
 
         let pw_sdm: u8 = if vco_fra == 0 { 0x08 } else { 0x00 };
         let mut sdm: u32 = 0;
         let mut n_sdm: u32 = 2;
-        while vco_fra > 1 {
+        let mut iterations = 0;
+        while vco_fra > 1 && iterations < 16 {
+            iterations += 1;
             if vco_fra > (2 * pll_ref_khz / n_sdm as u64) {
                 sdm += 32768 / (n_sdm / 2);
                 vco_fra -= 2 * pll_ref_khz / n_sdm as u64;
